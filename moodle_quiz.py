@@ -5,6 +5,7 @@ Cliente para cuestionarios Moodle (mod_quiz) en campusvirtual UNIR Colombia.
 Uso:
   python moodle_quiz.py fetch [--config PATH]
   python moodle_quiz.py submit [--config PATH]
+  python moodle_quiz.py ollama-answers [--config PATH]  # requiere Ollama en local
   python moodle_quiz.py run [--config PATH]
 
 Las respuestas van en config.json -> "answers".
@@ -526,6 +527,129 @@ def print_questions(quiz: QuizAttempt) -> None:
         print()
 
 
+SYSTEM_OLLAMA = (
+    "Eres un asistente que responde tests de opción múltiple. "
+    'Responde únicamente con un objeto JSON en una línea, formato: {"choice": N} '
+    "donde N es el índice entero de la opción correcta: 0 = primera opción (a), "
+    "1 = segunda (b), etc. Sin explicación ni texto adicional."
+)
+
+
+def build_ollama_question_prompt(q: Question) -> str:
+    lines = [f"Pregunta:\n{q.text}\n\nOpciones:\n"]
+    for i, opt in enumerate(q.options):
+        letter = chr(ord("a") + i)
+        lines.append(f"  [{i}] ({letter}) {opt}\n")
+    return "".join(lines)
+
+
+def ollama_chat(base_url: str, model: str, system: str, user: str) -> str:
+    url = f"{base_url.rstrip('/')}/api/chat"
+    body = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system},
+            {"role": "user", "content": user},
+        ],
+        "stream": False,
+        "options": {"temperature": 0.2},
+    }
+    r = requests.post(url, json=body, timeout=180)
+    r.raise_for_status()
+    data = r.json()
+    msg = data.get("message") or {}
+    return (msg.get("content") or "").strip()
+
+
+def parse_choice_from_llm(text: str, nopts: int) -> int:
+    """Interpreta JSON {\"choice\": i} o un dígito aislado."""
+    raw = text.strip()
+    if "```" in raw:
+        m = re.search(r"```(?:json)?\s*(\{[^`]*\})\s*```", raw, re.DOTALL)
+        if m:
+            raw = m.group(1)
+    try:
+        j = json.loads(raw)
+        if isinstance(j, dict) and "choice" in j:
+            i = int(j["choice"])
+            if 0 <= i < nopts:
+                return i
+    except (json.JSONDecodeError, ValueError, TypeError):
+        pass
+    brace = re.search(r"\{[^{}]+\}", raw)
+    if brace:
+        try:
+            j = json.loads(brace.group(0))
+            if isinstance(j, dict) and "choice" in j:
+                i = int(j["choice"])
+                if 0 <= i < nopts:
+                    return i
+        except (json.JSONDecodeError, ValueError, TypeError):
+            pass
+    for m in re.finditer(r"\b(\d+)\b", raw):
+        i = int(m.group(1))
+        if 0 <= i < nopts:
+            return i
+    raise ValueError(f"No se pudo interpretar la respuesta del modelo: {raw[:300]}")
+
+
+def cmd_ollama_answers(
+    config: dict[str, Any],
+    answers_out: Path | None,
+    ollama_url: str | None,
+    model: str | None,
+) -> int:
+    """
+    Descarga el intento, pregunta a Ollama por cada ítem y muestra un bloque JSON
+    listo para pegar en \"answers\" del config (o guarda con --answers-out).
+    """
+    base_quiz = config.get("base_url", DEFAULT_BASE)
+    session = make_session(cookie_from_config(config))
+    quiz = fetch_attempt(session, base_quiz, config["attempt"], config["cmid"])
+
+    oc = config.get("ollama") or {}
+    obase = (ollama_url or oc.get("base_url") or "http://127.0.0.1:11434").rstrip(
+        "/"
+    )
+    omodel = model or oc.get("model") or "llama3.2"
+
+    answers: dict[str, int] = {}
+    for q in quiz.questions:
+        prompt = build_ollama_question_prompt(q)
+        try:
+            raw = ollama_chat(obase, omodel, SYSTEM_OLLAMA, prompt)
+            choice = parse_choice_from_llm(raw, len(q.options))
+            answers[str(q.qno)] = choice
+            label = q.options[choice][:70] if choice < len(q.options) else "?"
+            print(f"P{q.qno} -> [{choice}] {label}", flush=True)
+        except requests.exceptions.ConnectionError as err:
+            print(
+                f"No hay conexión con Ollama en {obase!r} ({err}).\n"
+                "Instala Ollama: https://ollama.com — En macOS: "
+                "`brew install ollama` o descarga la app, luego:\n"
+                f"  ollama pull {omodel}\n"
+                "  ollama serve   # o deja la app en ejecución\n"
+                "Prueba: curl " + obase + "/api/tags",
+                file=sys.stderr,
+            )
+            return 3
+        except requests.exceptions.RequestException as err:
+            print(f"Error HTTP contra Ollama: {err}", file=sys.stderr)
+            return 3
+        except (ValueError, KeyError, TypeError) as err:
+            print(f"Error interpretando P{q.qno}: {err}", file=sys.stderr)
+            return 1
+
+    ordered = {str(k): answers[str(k)] for k in sorted(int(x) for x in answers)}
+    blob = json.dumps(ordered, ensure_ascii=False, indent=2)
+    print('\n--- Copia esto dentro de config.json en la clave "answers" ---')
+    print(blob)
+    if answers_out is not None:
+        answers_out.write_text(blob, encoding="utf-8")
+        print(f"\nTambién guardado en {answers_out}")
+    return 0
+
+
 def save_snapshot(quiz: QuizAttempt, path: Path) -> None:
     data = {
         "attempt": quiz.attempt_id,
@@ -687,6 +811,30 @@ def main() -> int:
     _add_config_arg(p_run)
     p_run.add_argument("--dry-run", action="store_true")
 
+    p_ollama = sub.add_parser(
+        "ollama-answers",
+        help="Generar respuestas (índices 0–n) con Ollama usando el texto del intento",
+    )
+    _add_config_arg(p_ollama)
+    p_ollama.add_argument(
+        "--answers-out",
+        type=Path,
+        default=None,
+        metavar="ARCHIVO",
+        help="Guardar el JSON de answers en un archivo",
+    )
+    p_ollama.add_argument(
+        "--ollama-url",
+        default=None,
+        help="URL base de Ollama (por defecto: config ollama.base_url o http://127.0.0.1:11434)",
+    )
+    p_ollama.add_argument(
+        "--model",
+        "-m",
+        default=None,
+        help="Modelo Ollama (por defecto: config ollama.model o llama3.2)",
+    )
+
     args = parser.parse_args()
     if not args.config.exists():
         print(f"No existe {args.config}. Copia config.example.json -> config.json", file=sys.stderr)
@@ -701,6 +849,13 @@ def main() -> int:
     if args.command == "run":
         cmd_fetch(config, Path("quiz_snapshot.json"))
         return cmd_submit(config, args.dry_run)
+    if args.command == "ollama-answers":
+        return cmd_ollama_answers(
+            config,
+            args.answers_out,
+            args.ollama_url,
+            args.model,
+        )
     return 2
 
 

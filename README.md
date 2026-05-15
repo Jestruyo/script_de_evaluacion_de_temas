@@ -29,6 +29,34 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
+### Ollama (opcional, para `ollama-answers`)
+
+Sirve para generar el objeto `answers` con un modelo **local** (sin API de pago). No va incluido en el contenedor Docker por defecto; úsalo en tu máquina con Python.
+
+1. **Instala Ollama** (macOS):
+   - Desde [ollama.com](https://ollama.com/download) (app), o con Homebrew: `brew install ollama`
+   - Inicia el servicio (la app lo hace, o en terminal: `ollama serve`).
+
+2. **Descarga un modelo** (ejemplo ligero; elige otro si prefieres):
+
+   ```bash
+   ollama pull llama3.2
+   ```
+
+3. **Genera las respuestas** (misma `cookie` / intento que para `fetch`; no hace falta tener `answers` rellenado aún):
+
+   ```bash
+   python moodle_quiz.py ollama-answers --config config.json --answers-out answers_ollama.json
+   ```
+
+   El comando imprime un JSON y opcionalmente lo guarda. Copia ese bloque dentro de `config.json` → `"answers"`, revisa los índices y luego usa `submit` como siempre.
+
+Parámetros opcionales: `--ollama-url http://127.0.0.1:11434`, `--model llama3.2`. También puedes poner en `config.json` un objeto `"ollama": { "base_url": "...", "model": "..." }`.
+
+**Docker:** Ollama en el host Mac se suele exponer con `--ollama-url http://host.docker.internal:11434` al ejecutar el contenedor (el servicio debe estar escuchando en tu PC).
+
+El modelo **puede equivocarse**; revisa siempre el JSON antes de `submit`. Usar IA para evaluaciones puede ir contra las normas del curso.
+
 ## Archivo de configuración
 
 Crea `config.json` en la raíz del proyecto (está en `.gitignore`; no lo subas a repositorios públicos).
@@ -44,6 +72,7 @@ Crea `config.json` en la raíz del proyecto (está en `.gitignore`; no lo subas 
 | `finalize_after_summary` | Si es `true` (defecto), y la URL tras el primer POST es `summary.php`, se envía un **segundo** POST con el formulario “Enviar todo y terminar” (`finishattempt=1`). Sin esto el intento puede quedar solo guardado, no entregado |
 | `next_finish` | (Opcional) Cadena **exacta** del campo `next` al pulsar “Terminar intento…” (cópiala de DevTools → POST `processattempt` → form data → `next`). Solo si el campus usa un texto distinto al que detecta el script |
 | `confirm_submit` | Si es `true`, `submit` pide confirmación en consola. Pon `false` para automatización o Docker sin `-it` |
+| `ollama` | (Opcional) Para `ollama-answers`: `{"base_url": "http://127.0.0.1:11434", "model": "llama3.2"}` |
 
 Ejemplo de estructura (valores ilustrativos):
 
@@ -102,6 +131,7 @@ Todos aceptan `-c` / `--config` con la ruta al JSON (por defecto `config.json`).
 | `fetch` | Descarga el intento e imprime preguntas/opciones; opcionalmente `--snapshot archivo.json` |
 | `submit --dry-run` | Construye el mismo POST que `submit` pero **no** lo envía |
 | `submit` | Envía las respuestas de `answers` (y el cierre en dos pasos si aplica) |
+| `ollama-answers` | Descarga el intento y pide a **Ollama** (local) un índice por pregunta; imprime JSON para `"answers"` |
 | `run` | Hace `fetch` (guarda `quiz_snapshot.json`) y luego `submit` en un solo paso |
 
 Ejemplos extra:
@@ -148,7 +178,6 @@ docker compose build
 | `HTTP 404` en `POST` a `processattempt.php` | Asegúrate de tener la última versión del script (copia todos los campos del formulario, no solo `input[type=hidden]`). Comprueba que el intento siga abierto en el navegador. Si persiste, mira el recorte del cuerpo que imprime el script (p. ej. Akamai). |
 | Redirige al login | Cookie incompleta o expirada. |
 | `submit` no avanza en Docker | Añade `-it` o pon `"confirm_submit": false`. |
-| Faltan preguntas en `answers` | Debe existir una clave por cada número de pregunta mostrado en `fetch`. |
 
 ## Aviso de uso responsable
 
