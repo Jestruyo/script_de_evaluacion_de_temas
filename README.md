@@ -152,7 +152,119 @@ python moodle_quiz.py run -c config.json
 
 Tras un envío correcto, el script suele indicar redirección a `summary.php` o `review.php`.
 
+## Ejemplo paso a paso completo
+
+Recorre estos pasos **en orden** la primera vez (Python en tu PC; Ollama solo si quieres generar `answers` con IA).
+
+### 1. Preparar el proyecto (una vez por máquina)
+
+```bash
+cd script_de_evaluacion_de_temas
+python3 -m venv .venv
+source .venv/bin/activate          # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+```
+
+Si usas **Docker** en lugar de Python local:
+
+```bash
+docker compose build
+```
+
+### 2. En el navegador (Moodle)
+
+1. Inicia sesión en el campus y entra al cuestionario.
+2. Pulsa **Intentar cuestionario** (o reanuda un intento en curso) hasta ver las preguntas.
+3. En la **barra de direcciones** copia dos datos de la URL, por ejemplo  
+   `.../mod/quiz/attempt.php?attempt=7574026&cmid=572606`  
+   - **`attempt`** → `7574026`  
+   - **`cmid`** → `572606`
+4. Abre **DevTools → Network**, recarga si hace falta, selecciona el **GET** a `attempt.php` y en **Request Headers** copia todo el valor de **`cookie:`** (o usa después `MOODLE_QUIZ_COOKIE`).
+
+Cada **nuevo intento** o **otro test** del curso suele cambiar al menos `attempt` y a veces `cmid`; vuelve a copiar desde la URL activa.
+
+### 3. Crear `config.json`
+
+En la raíz del repo (puedes partir de un JSON vacío de respuestas y rellenar después):
+
+```json
+{
+  "base_url": "https://campusvirtual.colombia.unir.net",
+  "attempt": 7574026,
+  "cmid": 572606,
+  "cookie": "PEGA_AQUI_EL_HEADER_COOKIE_COMPLETO",
+  "answers": {},
+  "finish_attempt": true,
+  "finalize_after_summary": true,
+  "confirm_submit": true
+}
+```
+
+- Si prefieres no guardar la cookie en disco: deja `"cookie": ""` y en terminal `export MOODLE_QUIZ_COOKIE='...'` antes de cada comando.
+
+### 4. Comprobar que el intento se lee bien
+
+```bash
+python moodle_quiz.py fetch --config config.json
+```
+
+Debes ver el mismo número de preguntas que en el navegador y textos coherentes. Con Docker:
+
+```bash
+docker compose run --rm moodle-quiz fetch --config /app/config.json
+```
+
+### 5. Obtener `answers` (manual o con Ollama)
+
+**Opción A — Manual:** edita `config.json` y rellena `"answers"` con índices `0`…`3` según la lista `[0] a.`, `[1] b.`, … del `fetch`.
+
+**Opción B — Ollama (local):**
+
+```bash
+brew services start ollama    # o: ollama serve (en otra terminal)
+ollama pull llama3.2
+python moodle_quiz.py ollama-answers --config config.json --answers-out answers_ollama.json
+```
+
+Desde **Docker**, si Ollama corre en tu Mac:  
+`docker compose run --rm moodle-quiz ollama-answers --config /app/config.json --ollama-url http://host.docker.internal:11434 --answers-out /app/out/answers.json`  
+(requiere volumen montado para `/app/out` si guardas fuera del contenedor.)
+
+Copia el JSON generado dentro de `config.json` → `"answers"` y **revísalo** (el modelo puede equivocarse).
+
+### 6. Simular el envío (sin entregar)
+
+```bash
+python moodle_quiz.py submit --config config.json --dry-run
+```
+
+Comprueba el bloque “Payload de respuestas”. Con Docker añade `-it` si quieres salida interactiva idéntica:
+
+```bash
+docker compose run --rm -it moodle-quiz submit --config /app/config.json --dry-run
+```
+
+### 7. Enviar al campus
+
+```bash
+python moodle_quiz.py submit --config config.json
+```
+
+Si `confirm_submit` es `true`, escribe `s` cuando pregunte. Éxito habitual: **HTTP 200** y URL final con `summary.php` y luego `review.php` (el script envía también “Enviar todo y terminar” si aplica).
+
+Docker:
+
+```bash
+docker compose run --rm -it moodle-quiz submit --config /app/config.json
+```
+
+### 8. Hacer **otro** test después
+
+Actualiza en `config.json` el **`attempt`** (y **`cmid`** si cambias de cuestionario). Renueva **`cookie`** / `MOODLE_QUIZ_COOKIE` si la sesión caducó. Repite desde el paso **4** (y **5** si usas Ollama de nuevo).
+
 ## Uso con Docker
+
+El **ejemplo paso a paso** ya incluye variantes `docker compose run ...` donde aplica. Resumen rápido:
 
 Mismos tres comandos que en la tabla superior, usando `--config /app/config.json`. Construye la imagen la primera vez:
 
@@ -178,6 +290,7 @@ docker compose build
 | `HTTP 404` en `POST` a `processattempt.php` | Asegúrate de tener la última versión del script (copia todos los campos del formulario, no solo `input[type=hidden]`). Comprueba que el intento siga abierto en el navegador. Si persiste, mira el recorte del cuerpo que imprime el script (p. ej. Akamai). |
 | Redirige al login | Cookie incompleta o expirada. |
 | `submit` no avanza en Docker | Añade `-it` o pon `"confirm_submit": false`. |
+| Faltan preguntas en `answers` | Debe existir una clave por cada número de pregunta mostrado en `fetch`. |
 
 ## Aviso de uso responsable
 
