@@ -2,6 +2,8 @@
 
 Herramienta en Python que reproduce el flujo de un intento de **test en Moodle** (`mod/quiz`): descarga la página del intento, opcionalmente guarda un snapshot JSON y puede enviar las respuestas definidas en un archivo de configuración.
 
+**Guía completa paso a paso (Docker, Ollama, primer envío y opcional segundo intento):** [Paso a paso completo](#paso-a-paso-completo).
+
 ## Solo Docker (+ Ollama en contenedor)
 
 Enfoque recomendado si **no** quieres instalar Python ni Ollama en el Mac: solo **Docker** (Desktop o Engine + Compose).
@@ -35,6 +37,8 @@ Parar Ollama y liberar red: `docker compose down` (el volumen `ollama_data` cons
 | Carpeta `out/` | Montada en `./out`; ahí se guardan `answers_ollama.json` y snapshots si usas `--snapshot /app/out/...`. |
 
 **No necesitas** `python3` ni `brew install ollama` en el Mac si sigues solo este flujo.
+
+La guía **ordenada** (incluye primer envío, `retake-answers` y segundo intento) está en [Paso a paso completo](#paso-a-paso-completo).
 
 ## Los tres comandos principales
 
@@ -176,6 +180,7 @@ Todos aceptan `-c` / `--config` con la ruta al JSON (por defecto `config.json`).
 | `submit --dry-run` | Construye el mismo POST que `submit` pero **no** lo envía |
 | `submit` | Envía las respuestas de `answers` (y el cierre en dos pasos si aplica) |
 | `ollama-answers` | Descarga el intento y pide a **Ollama** (en Docker o en el host) un índice por pregunta; imprime JSON para `"answers"` |
+| `retake-answers` | Con el intento **ya entregado**, descarga `review.php`: conserva las que acertaste; en las fallidas usa la marca correcta del HTML (si existe) u **Ollama**; genera JSON para el **siguiente** intento (`attempt` nuevo en el config) |
 | `run` | Hace `fetch` (guarda `quiz_snapshot.json`) y luego `submit` en un solo paso |
 
 Ejemplos extra (host):
@@ -192,21 +197,34 @@ Equivalentes **Docker** (`./out` montado en `/app/out`):
 docker compose run --rm moodle-quiz fetch --config /app/config.json --snapshot /app/out/backup.json
 docker compose run --rm -it moodle-quiz run --dry-run
 docker compose run --rm -it moodle-quiz run --config /app/config.json
+docker compose run --rm -it moodle-quiz retake-answers --config /app/config.json --answers-out /app/out/answers_retake.json
 ```
 
-## Flujo de trabajo recomendado
+### Segundo intento / revisión (`review.php`)
 
-1. **Configura** `attempt`, `cmid` y sesión (`cookie` o `MOODLE_QUIZ_COOKIE`).
-2. Ejecuta **`fetch`** y revisa en consola que el número de preguntas y los textos coinciden con lo que ves en el navegador.
-3. Completa **`answers`** con los índices correctos (comprueba contra la lista `[0] a.`, `[1] b.`, etc.).
-4. Ejecuta **`submit --dry-run`** y confirma que el resumen “Payload de respuestas” es el deseado.
-5. Ejecuta **`submit`** (o **`run`**). Si `confirm_submit` es `true`, escribe `s` cuando pregunte.
+Para la secuencia completa (cuándo cambiar `attempt`, cómo pegar `answers` desde `./out/`, etc.) sigue la sección **[Paso a paso completo](#paso-a-paso-completo)** (apartados **7–9**).
 
-Tras un envío correcto, el script suele indicar redirección a `summary.php` o `review.php`.
+Tras un `submit` exitoso Moodle muestra la revisión (correctas / incorrectas). Comando del script: `retake-answers` (mismas opciones Ollama que `ollama-answers`). `retake-answers --skip-ollama` no consulta el modelo (fallará si falta la clave correcta en el HTML de alguna pregunta fallida).
 
-## Ejemplo paso a paso completo
+Usar esto solo donde la normativa del curso lo permita.
 
-Recorre estos pasos **en orden** la primera vez. El camino por defecto aquí es **Docker + Ollama en contenedor**; las variantes con Python en el PC son opcionales.
+## Paso a paso completo
+
+Flujo **solo Docker**: el contenedor lee `/app/config.json` (tu archivo `config.json` en la raíz del repo). Ese archivo va montado **solo lectura**: los JSON generados (`./out/answers_ollama.json`, `./out/answers_retake.json`, …) los abres en el editor y **copias** el contenido en la clave `"answers"` del `config.json` en el Mac.
+
+### Resumen rápido (orden de comandos)
+
+| Fase | Qué haces |
+|------|-----------|
+| **0. Una vez** | `docker compose build` → `docker compose up -d ollama` → `docker compose exec ollama ollama pull llama3.2` |
+| **1. Moodle** | Cuestionario **en curso** en el navegador → de la URL copias `attempt` y `cmid` → copias la **cookie** (GET `attempt.php` → header `cookie:`) o usarás `MOODLE_QUIZ_COOKIE`. |
+| **2. Config** | `config.json` con `base_url`, `attempt`, `cmid`, sesión; `"answers"` puede ser `{}`. |
+| **3. Comprobar** | `docker compose run --rm moodle-quiz fetch --config /app/config.json` |
+| **4. IA** | `docker compose run --rm -it moodle-quiz ollama-answers --config /app/config.json --answers-out /app/out/answers_ollama.json` → pegas el JSON en `"answers"` y revisas. |
+| **5. Enviar** | `submit --dry-run` y luego `submit` (con `-it` si pide confirmación). |
+| **6. (Opcional) Segundo intento** | Sin cambiar todavía `attempt`, `retake-answers` (mismo intento entregado) → pegas `answers_retake` → en el navegador **nuevo intento** → **nuevo** `attempt` en el config → `fetch` → `submit`. |
+
+Los apartados siguientes detallan cada fase. Variantes con **Python en el PC** se indican donde aplica.
 
 ### 1. Preparar el proyecto (una vez por máquina)
 
@@ -258,7 +276,7 @@ En la raíz del repo (puedes partir de un JSON vacío de respuestas y rellenar d
 }
 ```
 
-- Si prefieres no guardar la cookie en disco: deja `"cookie": ""` y en terminal `export MOODLE_QUIZ_COOKIE='...'` antes de cada comando.
+- Si prefieres no guardar la cookie en disco: deja `"cookie": ""` y en terminal `export MOODLE_QUIZ_COOKIE='...'` antes de cada comando (en Docker: añade `-e MOODLE_QUIZ_COOKIE` al `docker compose run` cuando haga falta).
 
 ### 4. Comprobar que el intento se lee bien
 
@@ -286,7 +304,7 @@ Debes ver el mismo número de preguntas que en el navegador y textos coherentes.
 docker compose run --rm -it moodle-quiz ollama-answers --config /app/config.json --answers-out /app/out/answers_ollama.json
 ```
 
-El contenedor ya usa `OLLAMA_BASE_URL=http://ollama:11434`. Copia el JSON de `./out/answers_ollama.json` al campo `"answers"` de `config.json` y **revísalo**.
+El contenedor ya usa `OLLAMA_BASE_URL=http://ollama:11434`. Abre en tu Mac `./out/answers_ollama.json`, **copia** el objeto y **pégalo** en `"answers"` dentro de `config.json` (sustituye `{}`). Revísalo.
 
 **Opción C — Ollama instalado en el Mac** (sin servicio `ollama` en Compose): deja Ollama escuchando en el host y ejecuta el cliente Docker con:
 
@@ -317,7 +335,7 @@ python moodle_quiz.py submit --config config.json --dry-run
 
 Comprueba el bloque “Payload de respuestas”.
 
-### 7. Enviar al campus
+### 7. Enviar el primer intento al campus
 
 **Docker:**
 
@@ -331,11 +349,29 @@ docker compose run --rm -it moodle-quiz submit --config /app/config.json
 python moodle_quiz.py submit --config config.json
 ```
 
-Si `confirm_submit` es `true`, escribe `s` cuando pregunte. Éxito habitual: **HTTP 200** y URL final con `summary.php` y luego `review.php` (el script envía también “Enviar todo y terminar” si aplica).
+Si `confirm_submit` es `true`, escribe `s` cuando pregunte. Si todo va bien, acabas en **`review.php`** (revisión) o antes en **`summary.php`**. El número de **`attempt`** que tenías en el config es el del intento **ya entregado**; consérvalo para el paso 8 si vas a usar `retake-answers`.
 
-### 8. Hacer **otro** test después
+### 8. (Opcional) Segundo intento con `retake-answers`
 
-Actualiza en `config.json` el **`attempt`** (y **`cmid`** si cambias de cuestionario). Renueva **`cookie`** / `MOODLE_QUIZ_COOKIE` si la sesión caducó. Repite desde el paso **4** (y **5** si usas Ollama de nuevo).
+Solo si el curso permite **varios intentos** y quieres combinar lo que acertaste con las correcciones de la página de revisión (más Ollama solo donde el HTML no muestre la clave):
+
+1. **No cambies** `attempt` ni `cmid` todavía: deben seguir siendo los del intento que acabas de cerrar (debe coincidir con `review.php?attempt=…&cmid=…`).
+2. Ejecuta:
+
+   ```bash
+   docker compose run --rm -it moodle-quiz retake-answers --config /app/config.json --answers-out /app/out/answers_retake.json
+   ```
+
+3. Copia el contenido de `./out/answers_retake.json` a la clave `"answers"` de `config.json` en el Mac.
+4. En el **navegador**, inicia un **nuevo** intento del mismo test (si el botón existe). Al cargar las preguntas, la URL `attempt.php` tendrá un **`attempt` nuevo**.
+5. Sustituye en `config.json` ese **`attempt`** (y `cmid` solo si cambiases de actividad). Renueva cookie si caducó.
+6. Vuelve a ejecutar: `fetch` → `submit --dry-run` → `submit`.
+
+Si usas `retake-answers --skip-ollama`, no se llama a Ollama; el comando fallará si alguna pregunta fallida no muestra en la revisión cuál era la opción correcta.
+
+### 9. Otro cuestionario o tema distinto
+
+Actualiza **`cmid`** y **`attempt`** según la nueva URL de `attempt.php`. Renueva **`cookie`** / `MOODLE_QUIZ_COOKIE` si la sesión caducó. Repite desde el paso **4** (y **5** si generas respuestas con Ollama de nuevo). Si solo cambias de intento del mismo test sin pasar por `retake-answers`, basta con actualizar `attempt` desde la URL y asegurarte de que `"answers"` sigue siendo el que quieres enviar.
 
 ## Uso con Docker (detalles)
 

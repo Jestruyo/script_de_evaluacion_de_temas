@@ -5,7 +5,8 @@ Cliente para cuestionarios Moodle (mod_quiz) en campusvirtual UNIR Colombia.
 Uso:
   python moodle_quiz.py fetch [--config PATH]
   python moodle_quiz.py submit [--config PATH]
-  python moodle_quiz.py ollama-answers [--config PATH]  # requiere Ollama en local
+  python moodle_quiz.py ollama-answers [--config PATH]
+  python moodle_quiz.py retake-answers [--config PATH]  # tras review.php: base + Ollama solo en fallidas
   python moodle_quiz.py run [--config PATH]
 
 Las respuestas van en config.json -> "answers".
@@ -234,49 +235,178 @@ def extract_sesskey(soup: BeautifulSoup, html: str) -> str:
     raise ValueError("No se encontró sesskey en la página (¿sesión expirada?)")
 
 
+def parse_one_question_block(block) -> Question | None:
+    """Un único `div.que` de attempt.php o review.php."""
+    qno_el = block.select_one(".qno")
+    if not qno_el:
+        return None
+    try:
+        qno = int(qno_el.get_text(strip=True))
+    except ValueError:
+        return None
+
+    seq = block.select_one('input[name$="_:sequencecheck"]')
+    if not seq or not seq.get("name"):
+        return None
+    prefix = seq["name"].replace("_:sequencecheck", "")
+
+    qtext_el = block.select_one(".qtext")
+    text = clean_text(qtext_el)
+
+    options: list[str] = []
+    for row in block.select(".answer > div[class^='r']"):
+        label = row.select_one("[data-region='answer-label'] .flex-fill, .flex-fill")
+        if label:
+            options.append(clean_text(label))
+
+    slot_match = re.search(r"question-\d+-(\d+)", block.get("id", ""))
+    slot = int(slot_match.group(1)) if slot_match else qno
+
+    seq_val = (seq.get("value") or "1").strip()
+
+    return Question(
+        slot=slot,
+        qno=qno,
+        field_prefix=prefix,
+        text=text,
+        options=options,
+        sequence_value=seq_val,
+    )
+
+
 def parse_questions(soup: BeautifulSoup) -> list[Question]:
     questions: list[Question] = []
     for block in soup.select("div.que"):
-        qno_el = block.select_one(".qno")
-        if not qno_el:
-            continue
-        try:
-            qno = int(qno_el.get_text(strip=True))
-        except ValueError:
-            continue
-
-        seq = block.select_one('input[name$="_:sequencecheck"]')
-        if not seq or not seq.get("name"):
-            continue
-        prefix = seq["name"].replace("_:sequencecheck", "")
-
-        qtext_el = block.select_one(".qtext")
-        text = clean_text(qtext_el)
-
-        options: list[str] = []
-        for row in block.select(".answer > div[class^='r']"):
-            label = row.select_one("[data-region='answer-label'] .flex-fill, .flex-fill")
-            if label:
-                options.append(clean_text(label))
-
-        slot_match = re.search(r"question-\d+-(\d+)", block.get("id", ""))
-        slot = int(slot_match.group(1)) if slot_match else qno
-
-        seq_val = (seq.get("value") or "1").strip()
-
-        questions.append(
-            Question(
-                slot=slot,
-                qno=qno,
-                field_prefix=prefix,
-                text=text,
-                options=options,
-                sequence_value=seq_val,
-            )
-        )
+        q = parse_one_question_block(block)
+        if q:
+            questions.append(q)
 
     questions.sort(key=lambda q: q.qno)
     return questions
+
+
+@dataclass
+class ReviewEntry:
+    """Una pregunta en la página review.php tras entregar el intento."""
+
+    qno: int
+    slot: int
+    is_user_correct: bool
+    user_index: int
+    revealed_correct_index: int | None
+    question: Question
+
+
+def _revealed_correct_index_from_review_block(block) -> int | None:
+    """Índice de la opción marcada como correcta en la revisión (icono grade_correct / texto)."""
+    for row in block.select(".answer > div"):
+        img = row.select_one('img[src*="grade_correct"]')
+        if img is None:
+            img = row.select_one(
+                'img[alt="Correcta"], img[title="Correcta"], '
+                'img[alt="Correct"], img[title="Correct"]'
+            )
+        if img is None:
+            continue
+        # No confundir con la X del usuario en la opción incorrecta
+        if row.select_one('img[src*="grade_incorrect"]'):
+            continue
+        inp = row.select_one('input[type="radio"]')
+        if inp is not None and inp.get("value") is not None:
+            try:
+                return int(inp["value"])
+            except (ValueError, TypeError):
+                continue
+    return None
+
+
+def parse_review_page(html: str) -> list[ReviewEntry]:
+    """
+    Analiza mod/quiz/review.php: estado correcto/incorrecto, respuesta del usuario
+    y (si Moodle la muestra) la opción correcta revelada.
+    """
+    soup = BeautifulSoup(html, "lxml")
+    out: list[ReviewEntry] = []
+    for block in soup.select("div.que"):
+        q = parse_one_question_block(block)
+        if not q:
+            continue
+        classes = block.get("class") or []
+        is_wrong = "incorrect" in classes
+        is_user_correct = not is_wrong
+
+        sel = block.select_one('.answer input[type="radio"][checked]')
+        if not sel or sel.get("value") is None:
+            continue
+        try:
+            user_index = int(sel["value"])
+        except (ValueError, TypeError):
+            continue
+
+        revealed = _revealed_correct_index_from_review_block(block)
+        if is_user_correct and revealed is None:
+            revealed = user_index
+
+        out.append(
+            ReviewEntry(
+                qno=q.qno,
+                slot=q.slot,
+                is_user_correct=is_user_correct,
+                user_index=user_index,
+                revealed_correct_index=revealed,
+                question=q,
+            )
+        )
+    out.sort(key=lambda r: r.qno)
+    return out
+
+
+def fetch_review(
+    session: requests.Session, base_url: str, attempt: int, cmid: int
+) -> str:
+    """GET review.php tras un intento finalizado."""
+    root = base_url.rstrip("/")
+    url = f"{root}/mod/quiz/review.php"
+    resp = session.get(
+        url,
+        params={"attempt": attempt, "cmid": cmid},
+        headers=_headers_review_get(base_url, cmid),
+        timeout=60,
+    )
+    if not resp.ok:
+        _print_http_diagnostic(resp)
+    resp.raise_for_status()
+    if "login" in resp.url.lower() or "login/index.php" in resp.text:
+        raise PermissionError(
+            "Redirigió al login al abrir la revisión. Renueva la cookie."
+        )
+    if "review.php" not in resp.url and "mod/quiz/review" not in resp.url:
+        # Algunos temas redirigen; si el cuerpo es la revisión, sigue valiendo
+        if "page-mod-quiz-review" not in resp.text and "quizreviewsummary" not in resp.text:
+            raise ValueError(
+                "La respuesta no parece la página de revisión del cuestionario. "
+                f"URL: {resp.url}"
+            )
+    return resp.text
+
+
+def _headers_review_get(base_url: str, cmid: int) -> dict[str, str]:
+    root = base_url.rstrip("/")
+    return {
+        "Accept": (
+            "text/html,application/xhtml+xml,application/xml;q=0.9,"
+            "image/avif,image/webp,image/apng,*/*;q=0.8"
+        ),
+        "Accept-Language": "es-CO,es-419;q=0.9,es;q=0.8",
+        "Referer": f"{root}/mod/quiz/view.php?id={cmid}",
+        "Sec-Fetch-Dest": "document",
+        "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Site": "same-origin",
+        "Upgrade-Insecure-Requests": "1",
+        "sec-ch-ua": SEC_CH_UA,
+        "sec-ch-ua-mobile": "?0",
+        "sec-ch-ua-platform": '"macOS"',
+    }
 
 
 def _resolve_attempt_form_action(base_url: str, action: str) -> str:
@@ -654,7 +784,121 @@ def cmd_ollama_answers(
     return 0
 
 
-def save_snapshot(quiz: QuizAttempt, path: Path) -> None:
+def cmd_retake_answers(
+    config: dict[str, Any],
+    answers_out: Path | None,
+    ollama_url: str | None,
+    model: str | None,
+    skip_ollama: bool,
+) -> int:
+    """
+    Tras entregar un intento: GET review.php, conserva índices de preguntas bien
+    respondidas, toma la clave correcta del HTML si está revelada; si no, pide a Ollama
+    solo esas preguntas. Útil para preparar ``answers`` de un nuevo intento.
+    """
+    base_quiz = config.get("base_url", DEFAULT_BASE)
+    session = make_session(cookie_from_config(config))
+    attempt = int(config["attempt"])
+    cmid = int(config["cmid"])
+    try:
+        html = fetch_review(session, base_quiz, attempt, cmid)
+    except PermissionError as err:
+        print(err, file=sys.stderr)
+        return 1
+    except requests.RequestException as err:
+        print(f"Error al descargar review.php: {err}", file=sys.stderr)
+        return 1
+
+    entries = parse_review_page(html)
+    if not entries:
+        print(
+            "No se encontraron preguntas en la revisión. "
+            "¿El intento está entregado y `attempt`/`cmid` coinciden con la URL de review?",
+            file=sys.stderr,
+        )
+        return 1
+
+    oc = config.get("ollama") or {}
+    env_base = (os.environ.get("OLLAMA_BASE_URL") or "").strip()
+    obase = (
+        ollama_url
+        or env_base
+        or oc.get("base_url")
+        or "http://127.0.0.1:11434"
+    ).rstrip("/")
+    omodel = model or oc.get("model") or "llama3.2"
+
+    answers: dict[str, int] = {}
+    ollama_pending: list[ReviewEntry] = []
+
+    for e in entries:
+        if e.is_user_correct:
+            answers[str(e.qno)] = e.user_index
+        elif e.revealed_correct_index is not None:
+            answers[str(e.qno)] = e.revealed_correct_index
+        else:
+            ollama_pending.append(e)
+
+    if ollama_pending:
+        if skip_ollama:
+            qs = ", ".join(f"P{p.qno}" for p in ollama_pending)
+            print(
+                f"No se reveló la opción correcta en el HTML para: {qs}. "
+                "Ejecuta sin --skip-ollama con Ollama, o asigna esas claves a mano.",
+                file=sys.stderr,
+            )
+            return 2
+        for e in ollama_pending:
+            prompt = build_ollama_question_prompt(e.question)
+            try:
+                raw = ollama_chat(obase, omodel, SYSTEM_OLLAMA, prompt)
+                choice = parse_choice_from_llm(raw, len(e.question.options))
+                answers[str(e.qno)] = choice
+                lab = e.question.options[choice][:70] if choice < len(e.question.options) else "?"
+                print(f"P{e.qno} (solo IA) -> [{choice}] {lab}", flush=True)
+            except requests.exceptions.ConnectionError as err:
+                print(
+                    f"No hay conexión con Ollama en {obase!r} ({err}).",
+                    file=sys.stderr,
+                )
+                return 3
+            except requests.exceptions.RequestException as err:
+                print(f"Error HTTP contra Ollama: {err}", file=sys.stderr)
+                return 3
+            except (ValueError, KeyError, TypeError) as err:
+                print(f"Error interpretando P{e.qno}: {err}", file=sys.stderr)
+                return 1
+
+    print("\n--- Propuesta ``answers`` (revisar antes de enviar) ---")
+    for e in entries:
+        idx = answers[str(e.qno)]
+        if e.is_user_correct:
+            src = "mantenida (ya correcta)"
+        elif e in ollama_pending:
+            src = "modelo Ollama (revisión no mostró la clave)"
+        else:
+            src = "tomada de la revisión (opción marcada correcta)"
+        lab = (
+            e.question.options[idx][:72]
+            if idx < len(e.question.options)
+            else "?"
+        )
+        print(f"  P{e.qno} -> [{idx}] {src}: {lab}")
+
+    ordered = {str(k): answers[str(k)] for k in sorted(int(x) for x in answers)}
+    blob = json.dumps(ordered, ensure_ascii=False, indent=2)
+    print('\n--- Copia esto en config.json → "answers" para el siguiente intento ---')
+    print(blob)
+    if answers_out is not None:
+        answers_out.write_text(blob, encoding="utf-8")
+        print(f"\nGuardado también en {answers_out}")
+
+    print(
+        "\nSiguiente paso: inicia un **nuevo** intento en Moodle si el curso lo permite; "
+        "copia el nuevo `attempt` (y `cmid` si cambia) desde la URL de attempt.php, "
+        "pega el JSON arriba en `answers`, ejecuta `fetch` y luego `submit`."
+    )
+    return 0
     data = {
         "attempt": quiz.attempt_id,
         "cmid": quiz.cmid,
@@ -756,6 +1000,10 @@ def cmd_submit(config: dict[str, Any], dry_run: bool) -> int:
 
     if "review.php" in resp.url:
         print("\nParece que el intento quedó entregado (página de revisión).")
+        print(
+            "Para combinar aciertos + corregir fallidas con review/Ollama: "
+            "`python moodle_quiz.py retake-answers --config config.json`"
+        )
     elif "summary.php" in resp.url:
         if finish and not finalize:
             print(
@@ -839,6 +1087,38 @@ def main() -> int:
         help="Modelo Ollama (por defecto: config ollama.model o llama3.2)",
     )
 
+    p_retake = sub.add_parser(
+        "retake-answers",
+        help=(
+            "Con el intento ya entregado: lee review.php, mantiene respuestas correctas "
+            "y corrige fallidas (Opción correcta en HTML o, si no aparece, Ollama)"
+        ),
+    )
+    _add_config_arg(p_retake)
+    p_retake.add_argument(
+        "--answers-out",
+        type=Path,
+        default=None,
+        metavar="ARCHIVO",
+        help="Guardar el JSON de answers en un archivo",
+    )
+    p_retake.add_argument(
+        "--ollama-url",
+        default=None,
+        help="URL base de Ollama (por defecto: env/config como ollama-answers)",
+    )
+    p_retake.add_argument(
+        "--model",
+        "-m",
+        default=None,
+        help="Modelo Ollama",
+    )
+    p_retake.add_argument(
+        "--skip-ollama",
+        action="store_true",
+        help="No consultar Ollama (falla si la revisión no muestra la opción correcta en alguna fallida)",
+    )
+
     args = parser.parse_args()
     if not args.config.exists():
         print(f"No existe {args.config}. Copia config.example.json -> config.json", file=sys.stderr)
@@ -859,6 +1139,14 @@ def main() -> int:
             args.answers_out,
             args.ollama_url,
             args.model,
+        )
+    if args.command == "retake-answers":
+        return cmd_retake_answers(
+            config,
+            args.answers_out,
+            args.ollama_url,
+            args.model,
+            args.skip_ollama,
         )
     return 2
 
