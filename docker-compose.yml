@@ -1,0 +1,18 @@
+services:
+  moodle-quiz:
+    build: .
+    image: moodle-quiz:latest
+    working_dir: /app
+    volumes:
+      - ./config.json:/app/config.json:ro
+      # Descomenta para guardar snapshot en el host:
+      # - ./out:/app/out
+    # Opcional: cookie desde entorno (no aparece en el archivo montado). Ejemplo en shell:
+    # export MOODLE_QUIZ_COOKIE='nombre=valor; ...'
+    # environment:
+    #   MOODLE_QUIZ_COOKIE: ""
+    # Por defecto: fetch (ver Dockerfile CMD). Ejemplos:
+    #   docker compose run --rm moodle-quiz fetch --config /app/config.json --snapshot /app/out/quiz_snapshot.json
+    #   docker compose run --rm moodle-quiz submit --config /app/config.json --dry-run
+    #   docker compose run --rm -it moodle-quiz submit --config /app/config.json
+    # Para enviar sin TTY: en config.json pon "confirm_submit": false

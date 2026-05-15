@@ -1,0 +1,5 @@
+config.json
+quiz_snapshot.json
+.venv/
+__pycache__/
+*.pyc
