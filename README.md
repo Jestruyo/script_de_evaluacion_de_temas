@@ -9,18 +9,20 @@ Enfoque recomendado si **no** quieres instalar Python ni Ollama en el Mac: solo 
 1. Clona el repo y coloca `config.json` en la raíz (con `base_url`, `attempt`, `cmid`, `cookie` o usa `MOODLE_QUIZ_COOKIE`).
 2. Construye la imagen del cliente:  
    `docker compose build`
-3. Levanta **Ollama** (servicio en segundo plano, modelos en volumen persistente):  
-   `docker compose up -d ollama`
-4. Descarga un modelo **dentro** del contenedor (solo la primera vez o si cambias de modelo; ~2 GB para `llama3.2`):  
-   `docker compose exec ollama ollama pull llama3.2`
-5. Comprueba el cuestionario:  
+3. **Ollama en Docker — hay que hacerlo en este orden** (si inviertes los pasos o saltas el `up`, `exec` fallará):
+   1. Arranca el servicio (contenedor en marcha):  
+      `docker compose up -d ollama`
+   2. Con el servicio **running**, descarga el modelo **dentro** del contenedor (primera vez o si cambias de modelo; ~2 GB para `llama3.2`):  
+      `docker compose exec ollama ollama pull llama3.2`  
+      Si ves `service "ollama" is not running`, el paso anterior no se llegó a ejecutar o el contenedor paró: vuelve a `docker compose up -d ollama` y comprueba con `docker compose ps` que `ollama` esté **Up**.
+4. Comprueba el cuestionario:  
    `docker compose run --rm moodle-quiz fetch --config /app/config.json`
-6. Genera `answers` con la IA (el compose ya define `OLLAMA_BASE_URL=http://ollama:11434` para el contenedor `moodle-quiz`):  
+5. Genera `answers` con la IA (el compose ya define `OLLAMA_BASE_URL=http://ollama:11434` para el contenedor `moodle-quiz`):  
    `docker compose run --rm -it moodle-quiz ollama-answers --config /app/config.json --answers-out /app/out/answers_ollama.json`  
    Abre en tu Mac `./out/answers_ollama.json` y **copia** el JSON al campo `"answers"` de `config.json`.
-7. Simula envío:  
+6. Simula envío:  
    `docker compose run --rm -it moodle-quiz submit --config /app/config.json --dry-run`
-8. Entrega:  
+7. Entrega:  
    `docker compose run --rm -it moodle-quiz submit --config /app/config.json`  
    (Si `MOODLE_QUIZ_COOKIE` está vacío en el JSON, puedes exportarla en el host y pasarla:  
    `MOODLE_QUIZ_COOKIE='…' docker compose run --rm -e MOODLE_QUIZ_COOKIE -it moodle-quiz submit --config /app/config.json`)
@@ -213,6 +215,7 @@ Recorre estos pasos **en orden** la primera vez. El camino por defecto aquí es 
 ```bash
 cd script_de_evaluacion_de_temas
 docker compose build
+# Orden obligatorio: primero el servicio en marcha, luego exec (si no: «service ollama is not running»)
 docker compose up -d ollama
 docker compose exec ollama ollama pull llama3.2
 ```
@@ -354,6 +357,7 @@ El flujo principal está al inicio de este documento (**Solo Docker (+ Ollama en
 | Redirige al login | Cookie incompleta o expirada. |
 | `submit` no avanza en Docker | Añade `-it` o pon `"confirm_submit": false`. |
 | Faltan preguntas en `answers` | Debe existir una clave por cada número de pregunta mostrado en `fetch`. |
+| `service "ollama" is not running` al hacer `docker compose exec ollama …` | **`exec` exige que el contenedor ya esté en marcha.** Primero: `docker compose up -d ollama`. Luego: `docker compose exec ollama ollama pull …`. Verifica con `docker compose ps` que el servicio `ollama` esté **Up**. |
 
 ## Aviso de uso responsable
 

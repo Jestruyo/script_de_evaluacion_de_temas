@@ -4,9 +4,11 @@ services:
     image: ollama/ollama:latest
     volumes:
       - ollama_data:/root/.ollama
-    # Opcional: usar Ollama desde el Mac (curl, app) mientras el contenedor corre
-    ports:
-      - "127.0.0.1:11434:11434"
+    # Sin publicar 11434 en el host: `moodle-quiz` usa el nombre `ollama` en la red Compose.
+    # Si ya tienes Ollama nativo en el Mac (puerto 11434), publicar aquí fallaría con «address already in use».
+    # Para usar Ollama desde el host en otro puerto, descomenta:
+    # ports:
+    #   - "127.0.0.1:11435:11434"
 
   moodle-quiz:
     build: .
