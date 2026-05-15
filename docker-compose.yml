@@ -1,18 +1,33 @@
+# Uso típico (todo en Docker): ver README sección «Solo Docker + Ollama».
 services:
+  ollama:
+    image: ollama/ollama:latest
+    volumes:
+      - ollama_data:/root/.ollama
+    # Opcional: usar Ollama desde el Mac (curl, app) mientras el contenedor corre
+    ports:
+      - "127.0.0.1:11434:11434"
+
   moodle-quiz:
     build: .
     image: moodle-quiz:latest
     working_dir: /app
     volumes:
       - ./config.json:/app/config.json:ro
-      # Descomenta para guardar snapshot en el host:
-      # - ./out:/app/out
-    # Opcional: cookie desde entorno (no aparece en el archivo montado). Ejemplo en shell:
-    # export MOODLE_QUIZ_COOKIE='nombre=valor; ...'
+      - ./out:/app/out
+    environment:
+      # URL vista DESDE el contenedor moodle-quiz (nombre del servicio en la red Compose)
+      OLLAMA_BASE_URL: http://ollama:11434
+    depends_on:
+      - ollama
+    # Opcional: cookie sin guardar en config.json
     # environment:
     #   MOODLE_QUIZ_COOKIE: ""
     # Por defecto: fetch (ver Dockerfile CMD). Ejemplos:
     #   docker compose run --rm moodle-quiz fetch --config /app/config.json --snapshot /app/out/quiz_snapshot.json
-    #   docker compose run --rm moodle-quiz submit --config /app/config.json --dry-run
+    #   docker compose run --rm -it moodle-quiz submit --config /app/config.json --dry-run
     #   docker compose run --rm -it moodle-quiz submit --config /app/config.json
-    # Para enviar sin TTY: en config.json pon "confirm_submit": false
+    #   docker compose run --rm -it moodle-quiz ollama-answers --config /app/config.json --answers-out /app/out/answers_ollama.json
+
+volumes:
+  ollama_data: {}

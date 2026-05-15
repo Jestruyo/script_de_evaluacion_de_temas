@@ -608,9 +608,13 @@ def cmd_ollama_answers(
     quiz = fetch_attempt(session, base_quiz, config["attempt"], config["cmid"])
 
     oc = config.get("ollama") or {}
-    obase = (ollama_url or oc.get("base_url") or "http://127.0.0.1:11434").rstrip(
-        "/"
-    )
+    env_base = (os.environ.get("OLLAMA_BASE_URL") or "").strip()
+    obase = (
+        ollama_url
+        or env_base
+        or oc.get("base_url")
+        or "http://127.0.0.1:11434"
+    ).rstrip("/")
     omodel = model or oc.get("model") or "llama3.2"
 
     answers: dict[str, int] = {}

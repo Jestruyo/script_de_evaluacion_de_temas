@@ -2,25 +2,60 @@
 
 Herramienta en Python que reproduce el flujo de un intento de **test en Moodle** (`mod/quiz`): descarga la página del intento, opcionalmente guarda un snapshot JSON y puede enviar las respuestas definidas en un archivo de configuración.
 
+## Solo Docker (+ Ollama en contenedor)
+
+Enfoque recomendado si **no** quieres instalar Python ni Ollama en el Mac: solo **Docker** (Desktop o Engine + Compose).
+
+1. Clona el repo y coloca `config.json` en la raíz (con `base_url`, `attempt`, `cmid`, `cookie` o usa `MOODLE_QUIZ_COOKIE`).
+2. Construye la imagen del cliente:  
+   `docker compose build`
+3. Levanta **Ollama** (servicio en segundo plano, modelos en volumen persistente):  
+   `docker compose up -d ollama`
+4. Descarga un modelo **dentro** del contenedor (solo la primera vez o si cambias de modelo; ~2 GB para `llama3.2`):  
+   `docker compose exec ollama ollama pull llama3.2`
+5. Comprueba el cuestionario:  
+   `docker compose run --rm moodle-quiz fetch --config /app/config.json`
+6. Genera `answers` con la IA (el compose ya define `OLLAMA_BASE_URL=http://ollama:11434` para el contenedor `moodle-quiz`):  
+   `docker compose run --rm -it moodle-quiz ollama-answers --config /app/config.json --answers-out /app/out/answers_ollama.json`  
+   Abre en tu Mac `./out/answers_ollama.json` y **copia** el JSON al campo `"answers"` de `config.json`.
+7. Simula envío:  
+   `docker compose run --rm -it moodle-quiz submit --config /app/config.json --dry-run`
+8. Entrega:  
+   `docker compose run --rm -it moodle-quiz submit --config /app/config.json`  
+   (Si `MOODLE_QUIZ_COOKIE` está vacío en el JSON, puedes exportarla en el host y pasarla:  
+   `MOODLE_QUIZ_COOKIE='…' docker compose run --rm -e MOODLE_QUIZ_COOKIE -it moodle-quiz submit --config /app/config.json`)
+
+Parar Ollama y liberar red: `docker compose down` (el volumen `ollama_data` conserva el modelo descargado).
+
+| Variable / detalle | Uso |
+|--------------------|-----|
+| `OLLAMA_BASE_URL` | Lo define `docker-compose.yml`; el script la usa para `ollama-answers` (prioridad: CLI `--ollama-url` > esta variable > `config.ollama.base_url`). |
+| Carpeta `out/` | Montada en `./out`; ahí se guardan `answers_ollama.json` y snapshots si usas `--snapshot /app/out/...`. |
+
+**No necesitas** `python3` ni `brew install ollama` en el Mac si sigues solo este flujo.
+
 ## Los tres comandos principales
 
 Úsalos en este orden: ver el cuestionario, simular el envío y entregar.
 
-| Paso | Comando (Python local) | Comando (Docker) |
-|------|------------------------|-------------------|
-| **1. Ver preguntas** | `python moodle_quiz.py fetch --config config.json` | `docker compose run --rm moodle-quiz fetch --config /app/config.json` |
-| **2. Probar sin enviar** | `python moodle_quiz.py submit --config config.json --dry-run` | `docker compose run --rm -it moodle-quiz submit --config /app/config.json --dry-run` |
-| **3. Enviar al campus** | `python moodle_quiz.py submit --config config.json` | `docker compose run --rm -it moodle-quiz submit --config /app/config.json` |
+| Paso | Comando (Docker) | Comando (Python local, opcional) |
+|------|------------------|-----------------------------------|
+| **1. Ver preguntas** | `docker compose run --rm moodle-quiz fetch --config /app/config.json` | `python moodle_quiz.py fetch --config config.json` |
+| **2. Probar sin enviar** | `docker compose run --rm -it moodle-quiz submit --config /app/config.json --dry-run` | `python moodle_quiz.py submit --config config.json --dry-run` |
+| **3. Enviar al campus** | `docker compose run --rm -it moodle-quiz submit --config /app/config.json` | `python moodle_quiz.py submit --config config.json` |
 
-Antes de ejecutarlos necesitas `config.json` con `attempt`, `cmid`, `answers` y sesión (`cookie` o `MOODLE_QUIZ_COOKIE`). La primera vez con Docker: `docker compose build`. En el paso 3, si `confirm_submit` es `true`, el script pregunta en consola; por eso Docker usa `-it` en `submit`. Con `"confirm_submit": false` puedes quitar `-it`.
+Antes de ejecutarlos necesitas `config.json` con `attempt`, `cmid`, `answers` y sesión (`cookie` o `MOODLE_QUIZ_COOKIE`). La primera vez: `docker compose build` y, si usarás IA, `docker compose up -d ollama` más `docker compose exec ollama ollama pull …` (ver arriba). En el paso 3, si `confirm_submit` es `true`, el script pregunta en consola; por eso Docker usa `-it` en `submit`. Con `"confirm_submit": false` puedes quitar `-it`.
 
 ## Requisitos
 
-- Python 3.10+ (entorno local) **o** Docker con Docker Compose
+- **Docker** con Docker Compose (flujo principal de este README)
+- Python 3.10+ **solo** si ejecutas el script fuera del contenedor
 - Una sesión válida en el campus (cookies de navegador)
 - `attempt` y `cmid` correctos para el intento abierto del cuestionario
 
-## Instalación local
+## Instalación local (opcional)
+
+Si no vas a usar el contenedor `moodle-quiz` y prefieres `python` en el host:
 
 ```bash
 cd script_de_evaluacion_de_temas
@@ -29,31 +64,31 @@ source .venv/bin/activate   # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-### Ollama (opcional, para `ollama-answers`)
+### Ollama en tu Mac (solo si no usas el contenedor `ollama`)
 
-Sirve para generar el objeto `answers` con un modelo **local** (sin API de pago). No va incluido en el contenedor Docker por defecto; úsalo en tu máquina con Python.
+Si ya usas **Docker** con el servicio `ollama` del `docker-compose.yml`, **no instales** Ollama con Homebrew ni a mano: el flujo principal está en la sección **Solo Docker (+ Ollama en contenedor)** al inicio de este documento.
 
-1. **Instala Ollama** (macOS):
-   - Desde [ollama.com](https://ollama.com/download) (app), o con Homebrew: `brew install ollama`
-   - Inicia el servicio (la app lo hace, o en terminal: `ollama serve`).
+Para desarrollo sin Docker: [ollama.com](https://ollama.com/download) o `brew install ollama`, luego `ollama pull llama3.2` y en `config.json` (o variable) `base_url` apuntando a `http://127.0.0.1:11434`.
 
-2. **Descarga un modelo** (ejemplo ligero; elige otro si prefieres):
+**Genera las respuestas** (misma `cookie` / intento que para `fetch`; no hace falta tener `answers` rellenado aún):
 
-   ```bash
-   ollama pull llama3.2
-   ```
+- **Docker (recomendado, Ollama ya en Compose):**
 
-3. **Genera las respuestas** (misma `cookie` / intento que para `fetch`; no hace falta tener `answers` rellenado aún):
+  ```bash
+  docker compose run --rm -it moodle-quiz ollama-answers --config /app/config.json --answers-out /app/out/answers_ollama.json
+  ```
 
-   ```bash
-   python moodle_quiz.py ollama-answers --config config.json --answers-out answers_ollama.json
-   ```
+- **Solo en tu máquina (Python + Ollama local):**
 
-   El comando imprime un JSON y opcionalmente lo guarda. Copia ese bloque dentro de `config.json` → `"answers"`, revisa los índices y luego usa `submit` como siempre.
+  ```bash
+  python moodle_quiz.py ollama-answers --config config.json --answers-out answers_ollama.json
+  ```
 
-Parámetros opcionales: `--ollama-url http://127.0.0.1:11434`, `--model llama3.2`. También puedes poner en `config.json` un objeto `"ollama": { "base_url": "...", "model": "..." }`.
+El comando imprime un JSON y opcionalmente lo guarda. Copia ese bloque dentro de `config.json` → `"answers"`, revisa los índices y luego usa `submit` como siempre.
 
-**Docker:** Ollama en el host Mac se suele exponer con `--ollama-url http://host.docker.internal:11434` al ejecutar el contenedor (el servicio debe estar escuchando en tu PC).
+Parámetros opcionales: `--ollama-url`, `--model`. En Docker la URL por defecto la fija `OLLAMA_BASE_URL` en `docker-compose.yml`. También puedes poner en `config.json` un objeto `"ollama": { "base_url": "...", "model": "..." }`.
+
+**Docker con Ollama solo en el Mac (sin servicio `ollama` en Compose):** `OLLAMA_BASE_URL=http://host.docker.internal:11434` o `--ollama-url http://host.docker.internal:11434`.
 
 El modelo **puede equivocarse**; revisa siempre el JSON antes de `submit`. Usar IA para evaluaciones puede ir contra las normas del curso.
 
@@ -72,7 +107,7 @@ Crea `config.json` en la raíz del proyecto (está en `.gitignore`; no lo subas 
 | `finalize_after_summary` | Si es `true` (defecto), y la URL tras el primer POST es `summary.php`, se envía un **segundo** POST con el formulario “Enviar todo y terminar” (`finishattempt=1`). Sin esto el intento puede quedar solo guardado, no entregado |
 | `next_finish` | (Opcional) Cadena **exacta** del campo `next` al pulsar “Terminar intento…” (cópiala de DevTools → POST `processattempt` → form data → `next`). Solo si el campus usa un texto distinto al que detecta el script |
 | `confirm_submit` | Si es `true`, `submit` pide confirmación en consola. Pon `false` para automatización o Docker sin `-it` |
-| `ollama` | (Opcional) Para `ollama-answers`: `{"base_url": "http://127.0.0.1:11434", "model": "llama3.2"}` |
+| `ollama` | (Opcional) Para `ollama-answers`: `{"base_url": "http://127.0.0.1:11434", "model": "llama3.2"}`. En Docker suele bastar la variable de entorno `OLLAMA_BASE_URL` del `docker-compose.yml`. |
 
 Ejemplo de estructura (valores ilustrativos):
 
@@ -120,6 +155,13 @@ export MOODLE_QUIZ_COOKIE='nombre=valor; nombre2=valor2; …'
 python moodle_quiz.py fetch --config config.json
 ```
 
+**Docker** (misma variable en el host, se pasa al contenedor):
+
+```bash
+export MOODLE_QUIZ_COOKIE='nombre=valor; nombre2=valor2; …'
+docker compose run --rm -e MOODLE_QUIZ_COOKIE moodle-quiz fetch --config /app/config.json
+```
+
 Si `MOODLE_QUIZ_COOKIE` está definida y no vacía, **tiene prioridad** sobre el campo `cookie` del JSON.
 
 ## Comandos del script (referencia)
@@ -131,15 +173,23 @@ Todos aceptan `-c` / `--config` con la ruta al JSON (por defecto `config.json`).
 | `fetch` | Descarga el intento e imprime preguntas/opciones; opcionalmente `--snapshot archivo.json` |
 | `submit --dry-run` | Construye el mismo POST que `submit` pero **no** lo envía |
 | `submit` | Envía las respuestas de `answers` (y el cierre en dos pasos si aplica) |
-| `ollama-answers` | Descarga el intento y pide a **Ollama** (local) un índice por pregunta; imprime JSON para `"answers"` |
+| `ollama-answers` | Descarga el intento y pide a **Ollama** (en Docker o en el host) un índice por pregunta; imprime JSON para `"answers"` |
 | `run` | Hace `fetch` (guarda `quiz_snapshot.json`) y luego `submit` en un solo paso |
 
-Ejemplos extra:
+Ejemplos extra (host):
 
 ```bash
 python moodle_quiz.py fetch -c config.json --snapshot ./backup.json
 python moodle_quiz.py run --dry-run
 python moodle_quiz.py run -c config.json
+```
+
+Equivalentes **Docker** (`./out` montado en `/app/out`):
+
+```bash
+docker compose run --rm moodle-quiz fetch --config /app/config.json --snapshot /app/out/backup.json
+docker compose run --rm -it moodle-quiz run --dry-run
+docker compose run --rm -it moodle-quiz run --config /app/config.json
 ```
 
 ## Flujo de trabajo recomendado
@@ -154,21 +204,26 @@ Tras un envío correcto, el script suele indicar redirección a `summary.php` o 
 
 ## Ejemplo paso a paso completo
 
-Recorre estos pasos **en orden** la primera vez (Python en tu PC; Ollama solo si quieres generar `answers` con IA).
+Recorre estos pasos **en orden** la primera vez. El camino por defecto aquí es **Docker + Ollama en contenedor**; las variantes con Python en el PC son opcionales.
 
 ### 1. Preparar el proyecto (una vez por máquina)
+
+**Con Docker (recomendado):**
+
+```bash
+cd script_de_evaluacion_de_temas
+docker compose build
+docker compose up -d ollama
+docker compose exec ollama ollama pull llama3.2
+```
+
+**Solo si no usas Docker** para el cliente:
 
 ```bash
 cd script_de_evaluacion_de_temas
 python3 -m venv .venv
 source .venv/bin/activate          # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
-```
-
-Si usas **Docker** en lugar de Python local:
-
-```bash
-docker compose build
 ```
 
 ### 2. En el navegador (Moodle)
@@ -204,47 +259,70 @@ En la raíz del repo (puedes partir de un JSON vacío de respuestas y rellenar d
 
 ### 4. Comprobar que el intento se lee bien
 
-```bash
-python moodle_quiz.py fetch --config config.json
-```
-
-Debes ver el mismo número de preguntas que en el navegador y textos coherentes. Con Docker:
+**Docker:**
 
 ```bash
 docker compose run --rm moodle-quiz fetch --config /app/config.json
 ```
 
+**Python en el PC (opcional):**
+
+```bash
+python moodle_quiz.py fetch --config config.json
+```
+
+Debes ver el mismo número de preguntas que en el navegador y textos coherentes.
+
 ### 5. Obtener `answers` (manual o con Ollama)
 
 **Opción A — Manual:** edita `config.json` y rellena `"answers"` con índices `0`…`3` según la lista `[0] a.`, `[1] b.`, … del `fetch`.
 
-**Opción B — Ollama (local):**
+**Opción B — Ollama en Docker (servicio `ollama` del `docker-compose.yml`):** asegúrate de tener `docker compose up -d ollama` y el modelo descargado (`docker compose exec ollama ollama pull llama3.2`). Luego:
 
 ```bash
-brew services start ollama    # o: ollama serve (en otra terminal)
-ollama pull llama3.2
+docker compose run --rm -it moodle-quiz ollama-answers --config /app/config.json --answers-out /app/out/answers_ollama.json
+```
+
+El contenedor ya usa `OLLAMA_BASE_URL=http://ollama:11434`. Copia el JSON de `./out/answers_ollama.json` al campo `"answers"` de `config.json` y **revísalo**.
+
+**Opción C — Ollama instalado en el Mac** (sin servicio `ollama` en Compose): deja Ollama escuchando en el host y ejecuta el cliente Docker con:
+
+```bash
+docker compose run --rm -it -e OLLAMA_BASE_URL=http://host.docker.internal:11434 moodle-quiz ollama-answers --config /app/config.json --answers-out /app/out/answers_ollama.json
+```
+
+**Opción D — Todo en el PC sin Docker** (Python + Ollama local):
+
+```bash
+ollama pull llama3.2   # u ollama serve / brew services según tu instalación
 python moodle_quiz.py ollama-answers --config config.json --answers-out answers_ollama.json
 ```
 
-Desde **Docker**, si Ollama corre en tu Mac:  
-`docker compose run --rm moodle-quiz ollama-answers --config /app/config.json --ollama-url http://host.docker.internal:11434 --answers-out /app/out/answers.json`  
-(requiere volumen montado para `/app/out` si guardas fuera del contenedor.)
-
-Copia el JSON generado dentro de `config.json` → `"answers"` y **revísalo** (el modelo puede equivocarse).
-
 ### 6. Simular el envío (sin entregar)
 
-```bash
-python moodle_quiz.py submit --config config.json --dry-run
-```
-
-Comprueba el bloque “Payload de respuestas”. Con Docker añade `-it` si quieres salida interactiva idéntica:
+**Docker:**
 
 ```bash
 docker compose run --rm -it moodle-quiz submit --config /app/config.json --dry-run
 ```
 
+**Python en el PC (opcional):**
+
+```bash
+python moodle_quiz.py submit --config config.json --dry-run
+```
+
+Comprueba el bloque “Payload de respuestas”.
+
 ### 7. Enviar al campus
+
+**Docker:**
+
+```bash
+docker compose run --rm -it moodle-quiz submit --config /app/config.json
+```
+
+**Python en el PC (opcional):**
 
 ```bash
 python moodle_quiz.py submit --config config.json
@@ -252,34 +330,19 @@ python moodle_quiz.py submit --config config.json
 
 Si `confirm_submit` es `true`, escribe `s` cuando pregunte. Éxito habitual: **HTTP 200** y URL final con `summary.php` y luego `review.php` (el script envía también “Enviar todo y terminar” si aplica).
 
-Docker:
-
-```bash
-docker compose run --rm -it moodle-quiz submit --config /app/config.json
-```
-
 ### 8. Hacer **otro** test después
 
 Actualiza en `config.json` el **`attempt`** (y **`cmid`** si cambias de cuestionario). Renueva **`cookie`** / `MOODLE_QUIZ_COOKIE` si la sesión caducó. Repite desde el paso **4** (y **5** si usas Ollama de nuevo).
 
-## Uso con Docker
+## Uso con Docker (detalles)
 
-El **ejemplo paso a paso** ya incluye variantes `docker compose run ...` donde aplica. Resumen rápido:
+El flujo principal está al inicio de este documento (**Solo Docker (+ Ollama en contenedor)**) y en la tabla de **Los tres comandos principales**. Aquí, notas extra:
 
-Mismos tres comandos que en la tabla superior, usando `--config /app/config.json`. Construye la imagen la primera vez:
-
-```bash
-docker compose build
-```
-
-- `docker-compose.yml` monta `./config.json` en `/app/config.json`. El `Dockerfile` usa por defecto `fetch` con ese archivo.
+- `docker-compose.yml` monta `./config.json` en `/app/config.json` (solo lectura) y `./out` en `/app/out` para `answers_ollama.json` y snapshots. El `Dockerfile` usa por defecto `fetch` con ese archivo.
 - Para **confirmación interactiva** en `submit`, usa **`-it`**. Si usas `confirm_submit: false`, no hace falta.
-- El snapshot por defecto se escribe **dentro del contenedor**; con `--rm` se pierde al salir. Para guardarlo en tu máquina:
-  1. Crea una carpeta, p. ej. `out/`.
-  2. En `docker-compose.yml` descomenta el volumen `./out:/app/out`.
-  3. Ejecuta:  
-     `docker compose run --rm moodle-quiz fetch --config /app/config.json --snapshot /app/out/quiz_snapshot.json`
-- Puedes pasar la cookie al contenedor sin meterla en el archivo:  
+- Snapshot en el host:  
+  `docker compose run --rm moodle-quiz fetch --config /app/config.json --snapshot /app/out/quiz_snapshot.json`
+- Cookie sin guardarla en `config.json`:  
   `MOODLE_QUIZ_COOKIE='…' docker compose run --rm -e MOODLE_QUIZ_COOKIE moodle-quiz fetch --config /app/config.json`
 
 ## Solución de problemas
