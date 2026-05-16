@@ -21,6 +21,7 @@ import json
 import os
 import re
 import sys
+from json import JSONDecoder
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any
@@ -685,20 +686,77 @@ def print_questions(quiz: QuizAttempt) -> None:
         print()
 
 
-SYSTEM_MC_CHOICE = (
-    "Eres un asistente que responde tests de opción múltiple. "
-    'Responde únicamente con un objeto JSON en una línea, formato: {"choice": N} '
-    "donde N es el índice entero de la opción correcta: 0 = primera opción (a), "
-    "1 = segunda (b), etc. Sin explicación ni texto adicional."
+SYSTEM_MC_BATCH = (
+    "Eres un asistente que resuelve un cuestionario de opción múltiple completo en una sola respuesta. "
+    "Para cada ítem las opciones van numeradas desde 0 (primera opción = a), luego 1 = b, etc. "
+    'Devuelve ÚNICAMENTE un objeto JSON válido (sin markdown, sin texto antes ni después) con '
+    'exactamente esta forma: {"answers": {"<número_de_pregunta>": índice, ...}}. '
+    'Las claves dentro de "answers" deben ser strings con el número de pregunta indicado '
+    '(p. ej. "1", "2"). '
+    "Incluye una entrada por cada pregunta que recibiste; el índice debe estar en el rango de opciones "
+    "de esa pregunta."
 )
 
 
-def build_mc_question_prompt(q: Question) -> str:
-    lines = [f"Pregunta:\n{q.text}\n\nOpciones:\n"]
-    for i, opt in enumerate(q.options):
-        letter = chr(ord("a") + i)
-        lines.append(f"  [{i}] ({letter}) {opt}\n")
+def build_mc_batch_user_prompt(questions: list[Question]) -> str:
+    """Un solo texto de usuario con todas las preguntas (una llamada API)."""
+    lines: list[str] = [
+        'Debes responder con un solo JSON {"answers": {...}} cubriendo todas las preguntas siguientes.\n',
+    ]
+    for q in questions:
+        lines.append(f"\n--- Pregunta número {q.qno} ---\n")
+        lines.append(q.text)
+        lines.append("\nOpciones:\n")
+        for i, opt in enumerate(q.options):
+            letter = chr(ord("a") + i)
+            lines.append(f"  [{i}] ({letter}) {opt}\n")
     return "".join(lines)
+
+
+def extract_json_object_from_text(text: str) -> dict[str, Any]:
+    """Primer objeto JSON `{}` del texto (soporta bloques ```json y objetos anidados)."""
+    raw = text.strip()
+    fence = re.search(r"```(?:json)?\s*(\{[\s\S]*\})\s*```", raw)
+    if fence:
+        raw = fence.group(1).strip()
+    start = raw.find("{")
+    if start < 0:
+        raise ValueError(f"No se encontró objeto JSON en la respuesta: {text[:450]!r}")
+    obj, _ = JSONDecoder().raw_decode(raw[start:])
+    if not isinstance(obj, dict):
+        raise ValueError("La respuesta JSON debe ser un objeto en la raíz.")
+    return obj
+
+
+def parse_batch_mc_answers_from_llm(text: str, questions: list[Question]) -> dict[str, int]:
+    """
+    Interpreta {\"answers\": {\"1\": idx, ...}} (o equivalente); valida rangos por pregunta.
+    """
+    obj = extract_json_object_from_text(text)
+    blob = obj.get("answers") if isinstance(obj.get("answers"), dict) else None
+    src: dict[Any, Any] = blob if blob is not None else obj
+
+    out: dict[str, int] = {}
+    for q in questions:
+        key_str = str(q.qno)
+        if key_str not in src and q.qno in src:
+            raw_v = src[q.qno]
+        elif key_str in src:
+            raw_v = src[key_str]
+        else:
+            raise ValueError(
+                f'El JSON del modelo no incluye la pregunta {key_str}. '
+                f'Claves recibidas: {list(src.keys())!r}'
+            )
+        choice = int(raw_v)
+        nopts = len(q.options)
+        if choice < 0 or choice >= nopts:
+            raise ValueError(
+                f"Pregunta {q.qno}: índice {choice} fuera de rango para {nopts} opciones "
+                f"(0 .. {nopts - 1})."
+            )
+        out[key_str] = choice
+    return out
 
 
 def _gemini_response_text(response: Any) -> str:
@@ -775,8 +833,8 @@ def cmd_gemini_answers(
     model: str | None,
 ) -> int:
     """
-    Descarga el intento, pregunta a Gemini por cada ítem y muestra un bloque JSON
-    listo para pegar en \"answers\" del config (o guarda con --answers-out).
+    Descarga el intento, envía todas las preguntas a Gemini en una sola consulta
+    y muestra un bloque JSON listo para pegar en \"answers\" (o guarda con --answers-out).
     """
     try:
         gkey, gmodel = resolve_gemini_credentials(config, api_key, model)
@@ -788,21 +846,21 @@ def cmd_gemini_answers(
     session = make_session(cookie_from_config(config))
     quiz = fetch_attempt(session, base_quiz, config["attempt"], config["cmid"])
 
-    answers: dict[str, int] = {}
+    user_prompt = build_mc_batch_user_prompt(quiz.questions)
+    try:
+        raw = gemini_generate(gkey, gmodel, SYSTEM_MC_BATCH, user_prompt)
+        answers = parse_batch_mc_answers_from_llm(raw, quiz.questions)
+    except RuntimeError as err:
+        print(f"Error de la API de Gemini: {err}", file=sys.stderr)
+        return 3
+    except (ValueError, KeyError, TypeError) as err:
+        print(f"Error interpretando respuesta agrupada: {err}", file=sys.stderr)
+        return 1
+
     for q in quiz.questions:
-        prompt = build_mc_question_prompt(q)
-        try:
-            raw = gemini_generate(gkey, gmodel, SYSTEM_MC_CHOICE, prompt)
-            choice = parse_choice_from_llm(raw, len(q.options))
-            answers[str(q.qno)] = choice
-            label = q.options[choice][:70] if choice < len(q.options) else "?"
-            print(f"P{q.qno} -> [{choice}] {label}", flush=True)
-        except RuntimeError as err:
-            print(f"Error de la API de Gemini: {err}", file=sys.stderr)
-            return 3
-        except (ValueError, KeyError, TypeError) as err:
-            print(f"Error interpretando P{q.qno}: {err}", file=sys.stderr)
-            return 1
+        choice = answers[str(q.qno)]
+        label = q.options[choice][:70] if choice < len(q.options) else "?"
+        print(f"P{q.qno} -> [{choice}] {label}", flush=True)
 
     ordered = {str(k): answers[str(k)] for k in sorted(int(x) for x in answers)}
     blob = json.dumps(ordered, ensure_ascii=False, indent=2)
@@ -812,38 +870,6 @@ def cmd_gemini_answers(
         answers_out.write_text(blob, encoding="utf-8")
         print(f"\nTambién guardado en {answers_out}")
     return 0
-
-
-def parse_choice_from_llm(text: str, nopts: int) -> int:
-    """Interpreta JSON {\"choice\": i} o un dígito aislado."""
-    raw = text.strip()
-    if "```" in raw:
-        m = re.search(r"```(?:json)?\s*(\{[^`]*\})\s*```", raw, re.DOTALL)
-        if m:
-            raw = m.group(1)
-    try:
-        j = json.loads(raw)
-        if isinstance(j, dict) and "choice" in j:
-            i = int(j["choice"])
-            if 0 <= i < nopts:
-                return i
-    except (json.JSONDecodeError, ValueError, TypeError):
-        pass
-    brace = re.search(r"\{[^{}]+\}", raw)
-    if brace:
-        try:
-            j = json.loads(brace.group(0))
-            if isinstance(j, dict) and "choice" in j:
-                i = int(j["choice"])
-                if 0 <= i < nopts:
-                    return i
-        except (json.JSONDecodeError, ValueError, TypeError):
-            pass
-    for m in re.finditer(r"\b(\d+)\b", raw):
-        i = int(m.group(1))
-        if 0 <= i < nopts:
-            return i
-    raise ValueError(f"No se pudo interpretar la respuesta del modelo: {raw[:300]}")
 
 
 def cmd_retake_answers(
@@ -905,20 +931,22 @@ def cmd_retake_answers(
         except ValueError as err:
             print(err, file=sys.stderr)
             return 2
+        pending_qs = [e.question for e in llm_pending]
+        user_prompt = build_mc_batch_user_prompt(pending_qs)
+        try:
+            raw = gemini_generate(gkey, gmodel, SYSTEM_MC_BATCH, user_prompt)
+            batch = parse_batch_mc_answers_from_llm(raw, pending_qs)
+        except RuntimeError as err:
+            print(f"Error de la API de Gemini: {err}", file=sys.stderr)
+            return 3
+        except (ValueError, KeyError, TypeError) as err:
+            print(f"Error interpretando respuesta agrupada: {err}", file=sys.stderr)
+            return 1
         for e in llm_pending:
-            prompt = build_mc_question_prompt(e.question)
-            try:
-                raw = gemini_generate(gkey, gmodel, SYSTEM_MC_CHOICE, prompt)
-                choice = parse_choice_from_llm(raw, len(e.question.options))
-                answers[str(e.qno)] = choice
-                lab = e.question.options[choice][:70] if choice < len(e.question.options) else "?"
-                print(f"P{e.qno} (solo IA) -> [{choice}] {lab}", flush=True)
-            except RuntimeError as err:
-                print(f"Error de la API de Gemini: {err}", file=sys.stderr)
-                return 3
-            except (ValueError, KeyError, TypeError) as err:
-                print(f"Error interpretando P{e.qno}: {err}", file=sys.stderr)
-                return 1
+            choice = batch[str(e.qno)]
+            answers[str(e.qno)] = choice
+            lab = e.question.options[choice][:70] if choice < len(e.question.options) else "?"
+            print(f"P{e.qno} (solo IA) -> [{choice}] {lab}", flush=True)
 
     print("\n--- Propuesta ``answers`` (revisar antes de enviar) ---")
     for e in entries:
@@ -1119,7 +1147,7 @@ def main() -> int:
 
     p_gemini = sub.add_parser(
         "gemini-answers",
-        help="Generar respuestas (índices 0–n) con Google Gemini usando el texto del intento",
+        help="Generar respuestas con Gemini en una sola consulta (todas las preguntas del intento)",
     )
     _add_config_arg(p_gemini)
     p_gemini.add_argument(

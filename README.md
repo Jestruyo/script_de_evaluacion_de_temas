@@ -86,7 +86,7 @@ pip install -r requirements.txt
    python moodle_quiz.py gemini-answers --config config.json --answers-out answers_gemini.json
    ```
 
-El comando imprime un JSON y opcionalmente lo guarda. Copia ese bloque dentro de `config.json` → `"answers"`, revisa los índices y luego usa `submit` como siempre.
+El mismo modo por lotes se usa en `retake-answers` cuando hay varias fallidas sin clave en el HTML: **una** consulta con todas esas preguntas pendientes.
 
 Parámetros opcionales: `--api-key`, `--model` / `-m`. En `config.json` puedes usar solo metadatos (sin secretos expuestos), por ejemplo: `"gemini": { "model": "gemini-2.5-flash" }`.
 
@@ -173,7 +173,7 @@ Todos aceptan `-c` / `--config` con la ruta al JSON (por defecto `config.json`).
 | `fetch` | Descarga el intento e imprime preguntas/opciones; opcionalmente `--snapshot archivo.json` |
 | `submit --dry-run` | Construye el mismo POST que `submit` pero **no** lo envía |
 | `submit` | Envía las respuestas de `answers` (y el cierre en dos pasos si aplica) |
-| `gemini-answers` | Descarga el intento y pide a **Google Gemini** un índice por pregunta; imprime JSON para `"answers"` |
+| `gemini-answers` | Descarga el intento y envía **todas** las preguntas a Gemini **en una sola** petición; el modelo devuelve un JSON `"answers"` con un índice por pregunta (mejor frente a límites RPM del plan gratuito) |
 | `retake-answers` | Con el intento **ya entregado**, descarga `review.php`: conserva las que acertaste; en las fallidas usa la marca correcta del HTML (si existe) o **Gemini**; genera JSON para el **siguiente** intento (`attempt` nuevo en el config) |
 | `run` | Hace `fetch` (guarda `quiz_snapshot.json`) y luego `submit` en un solo paso |
 
