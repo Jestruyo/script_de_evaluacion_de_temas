@@ -3,4 +3,5 @@ quiz_snapshot.json
 .venv/
 __pycache__/
 *.pyc
-out/*.json
+.env
+.env.*

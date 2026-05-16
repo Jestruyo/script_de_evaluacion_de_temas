@@ -1,15 +1,8 @@
-# Uso típico (todo en Docker): ver README sección «Solo Docker + Ollama».
+# Cliente Moodle: imagen moodle-quiz. Para IA usa Google Gemini (API en la nube).
+# Pasa GEMINI_API_KEY al ejecutar gemini-answers / retake-answers (ver README).
+# Si antes usabas el servicio `ollama` de este repo: `docker compose down --remove-orphans`
+# para quitar contenedores huérfanos tras el cambio de compose.
 services:
-  ollama:
-    image: ollama/ollama:latest
-    volumes:
-      - ollama_data:/root/.ollama
-    # Sin publicar 11434 en el host: `moodle-quiz` usa el nombre `ollama` en la red Compose.
-    # Si ya tienes Ollama nativo en el Mac (puerto 11434), publicar aquí fallaría con «address already in use».
-    # Para usar Ollama desde el host en otro puerto, descomenta:
-    # ports:
-    #   - "127.0.0.1:11435:11434"
-
   moodle-quiz:
     build: .
     image: moodle-quiz:latest
@@ -17,19 +10,14 @@ services:
     volumes:
       - ./config.json:/app/config.json:ro
       - ./out:/app/out
-    environment:
-      # URL vista DESDE el contenedor moodle-quiz (nombre del servicio en la red Compose)
-      OLLAMA_BASE_URL: http://ollama:11434
-    depends_on:
-      - ollama
+    # Opcional: clave desde un .env local (añade .env a .gitignore; no lo subas)
+    # env_file:
+    #   - .env
     # Opcional: cookie sin guardar en config.json
     # environment:
     #   MOODLE_QUIZ_COOKIE: ""
+    #   GEMINI_API_KEY: ""
     # Por defecto: fetch (ver Dockerfile CMD). Ejemplos:
     #   docker compose run --rm moodle-quiz fetch --config /app/config.json --snapshot /app/out/quiz_snapshot.json
     #   docker compose run --rm -it moodle-quiz submit --config /app/config.json --dry-run
-    #   docker compose run --rm -it moodle-quiz submit --config /app/config.json
-    #   docker compose run --rm -it moodle-quiz ollama-answers --config /app/config.json --answers-out /app/out/answers_ollama.json
-
-volumes:
-  ollama_data: {}
+    #   docker compose run --rm -it -e GEMINI_API_KEY moodle-quiz gemini-answers --config /app/config.json --answers-out /app/out/answers_gemini.json

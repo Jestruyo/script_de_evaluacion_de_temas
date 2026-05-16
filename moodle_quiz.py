@@ -5,8 +5,8 @@ Cliente para cuestionarios Moodle (mod_quiz) en campusvirtual UNIR Colombia.
 Uso:
   python moodle_quiz.py fetch [--config PATH]
   python moodle_quiz.py submit [--config PATH]
-  python moodle_quiz.py ollama-answers [--config PATH]
-  python moodle_quiz.py retake-answers [--config PATH]  # tras review.php: base + Ollama solo en fallidas
+  python moodle_quiz.py gemini-answers [--config PATH]
+  python moodle_quiz.py retake-answers [--config PATH]  # tras review.php: conserva aciertos + Gemini en fallidas
   python moodle_quiz.py run [--config PATH]
 
 Las respuestas van en config.json -> "answers".
@@ -685,7 +685,7 @@ def print_questions(quiz: QuizAttempt) -> None:
         print()
 
 
-SYSTEM_OLLAMA = (
+SYSTEM_MC_CHOICE = (
     "Eres un asistente que responde tests de opción múltiple. "
     'Responde únicamente con un objeto JSON en una línea, formato: {"choice": N} '
     "donde N es el índice entero de la opción correcta: 0 = primera opción (a), "
@@ -693,7 +693,7 @@ SYSTEM_OLLAMA = (
 )
 
 
-def build_ollama_question_prompt(q: Question) -> str:
+def build_mc_question_prompt(q: Question) -> str:
     lines = [f"Pregunta:\n{q.text}\n\nOpciones:\n"]
     for i, opt in enumerate(q.options):
         letter = chr(ord("a") + i)
@@ -701,22 +701,117 @@ def build_ollama_question_prompt(q: Question) -> str:
     return "".join(lines)
 
 
-def ollama_chat(base_url: str, model: str, system: str, user: str) -> str:
-    url = f"{base_url.rstrip('/')}/api/chat"
-    body = {
-        "model": model,
-        "messages": [
-            {"role": "system", "content": system},
-            {"role": "user", "content": user},
-        ],
-        "stream": False,
-        "options": {"temperature": 0.2},
-    }
-    r = requests.post(url, json=body, timeout=180)
-    r.raise_for_status()
-    data = r.json()
-    msg = data.get("message") or {}
-    return (msg.get("content") or "").strip()
+def _gemini_response_text(response: Any) -> str:
+    """Extrae texto de GenerateContentResponse (incluye fallbacks si `.text` falla)."""
+    try:
+        t = getattr(response, "text", None)
+        if t:
+            return str(t).strip()
+    except (ValueError, AttributeError):
+        pass
+    parts: list[str] = []
+    for cand in getattr(response, "candidates", None) or []:
+        content = getattr(cand, "content", None)
+        if not content:
+            continue
+        for part in getattr(content, "parts", None) or []:
+            txt = getattr(part, "text", None)
+            if txt:
+                parts.append(str(txt))
+    return "\n".join(parts).strip()
+
+
+def gemini_generate(api_key: str, model_name: str, system: str, user: str) -> str:
+    import google.generativeai as genai
+    from google.api_core import exceptions as google_exc
+
+    genai.configure(api_key=api_key)
+    model = genai.GenerativeModel(model_name, system_instruction=system)
+    try:
+        resp = model.generate_content(
+            user,
+            generation_config=genai.GenerationConfig(temperature=0.2),
+        )
+    except google_exc.GoogleAPIError as err:
+        raise RuntimeError(str(err)) from err
+    text = _gemini_response_text(resp)
+    if not text:
+        raise ValueError("Respuesta vacía de Gemini (¿contenido bloqueado o sin candidatos?).")
+    return text
+
+
+def resolve_gemini_credentials(
+    config: dict[str, Any],
+    api_key_override: str | None,
+    model_override: str | None,
+) -> tuple[str, str]:
+    key = (api_key_override or "").strip()
+    if not key:
+        key = os.environ.get("GEMINI_API_KEY", "").strip()
+    if not key:
+        gc = config.get("gemini") or {}
+        key = str(gc.get("api_key") or "").strip()
+    if not key:
+        raise ValueError(
+            'Falta API key de Gemini. Obtén una en Google AI Studio y exporta '
+            'GEMINI_API_KEY, usa --api-key, o define "gemini": {"api_key": "..."} en '
+            'config.json (evita subir ese archivo si contiene la clave).'
+        )
+    gc = config.get("gemini") or {}
+    env_model = (os.environ.get("GEMINI_MODEL") or "").strip()
+    model = (
+        (model_override or "").strip()
+        or env_model
+        or str(gc.get("model") or "").strip()
+        or "gemini-2.5-flash"
+    )
+    return key, model
+
+
+def cmd_gemini_answers(
+    config: dict[str, Any],
+    answers_out: Path | None,
+    api_key: str | None,
+    model: str | None,
+) -> int:
+    """
+    Descarga el intento, pregunta a Gemini por cada ítem y muestra un bloque JSON
+    listo para pegar en \"answers\" del config (o guarda con --answers-out).
+    """
+    try:
+        gkey, gmodel = resolve_gemini_credentials(config, api_key, model)
+    except ValueError as err:
+        print(err, file=sys.stderr)
+        return 2
+
+    base_quiz = config.get("base_url", DEFAULT_BASE)
+    session = make_session(cookie_from_config(config))
+    quiz = fetch_attempt(session, base_quiz, config["attempt"], config["cmid"])
+
+    answers: dict[str, int] = {}
+    for q in quiz.questions:
+        prompt = build_mc_question_prompt(q)
+        try:
+            raw = gemini_generate(gkey, gmodel, SYSTEM_MC_CHOICE, prompt)
+            choice = parse_choice_from_llm(raw, len(q.options))
+            answers[str(q.qno)] = choice
+            label = q.options[choice][:70] if choice < len(q.options) else "?"
+            print(f"P{q.qno} -> [{choice}] {label}", flush=True)
+        except RuntimeError as err:
+            print(f"Error de la API de Gemini: {err}", file=sys.stderr)
+            return 3
+        except (ValueError, KeyError, TypeError) as err:
+            print(f"Error interpretando P{q.qno}: {err}", file=sys.stderr)
+            return 1
+
+    ordered = {str(k): answers[str(k)] for k in sorted(int(x) for x in answers)}
+    blob = json.dumps(ordered, ensure_ascii=False, indent=2)
+    print('\n--- Copia esto dentro de config.json en la clave "answers" ---')
+    print(blob)
+    if answers_out is not None:
+        answers_out.write_text(blob, encoding="utf-8")
+        print(f"\nTambién guardado en {answers_out}")
+    return 0
 
 
 def parse_choice_from_llm(text: str, nopts: int) -> int:
@@ -751,77 +846,16 @@ def parse_choice_from_llm(text: str, nopts: int) -> int:
     raise ValueError(f"No se pudo interpretar la respuesta del modelo: {raw[:300]}")
 
 
-def cmd_ollama_answers(
-    config: dict[str, Any],
-    answers_out: Path | None,
-    ollama_url: str | None,
-    model: str | None,
-) -> int:
-    """
-    Descarga el intento, pregunta a Ollama por cada ítem y muestra un bloque JSON
-    listo para pegar en \"answers\" del config (o guarda con --answers-out).
-    """
-    base_quiz = config.get("base_url", DEFAULT_BASE)
-    session = make_session(cookie_from_config(config))
-    quiz = fetch_attempt(session, base_quiz, config["attempt"], config["cmid"])
-
-    oc = config.get("ollama") or {}
-    env_base = (os.environ.get("OLLAMA_BASE_URL") or "").strip()
-    obase = (
-        ollama_url
-        or env_base
-        or oc.get("base_url")
-        or "http://127.0.0.1:11434"
-    ).rstrip("/")
-    omodel = model or oc.get("model") or "llama3.2"
-
-    answers: dict[str, int] = {}
-    for q in quiz.questions:
-        prompt = build_ollama_question_prompt(q)
-        try:
-            raw = ollama_chat(obase, omodel, SYSTEM_OLLAMA, prompt)
-            choice = parse_choice_from_llm(raw, len(q.options))
-            answers[str(q.qno)] = choice
-            label = q.options[choice][:70] if choice < len(q.options) else "?"
-            print(f"P{q.qno} -> [{choice}] {label}", flush=True)
-        except requests.exceptions.ConnectionError as err:
-            print(
-                f"No hay conexión con Ollama en {obase!r} ({err}).\n"
-                "Instala Ollama: https://ollama.com — En macOS: "
-                "`brew install ollama` o descarga la app, luego:\n"
-                f"  ollama pull {omodel}\n"
-                "  ollama serve   # o deja la app en ejecución\n"
-                "Prueba: curl " + obase + "/api/tags",
-                file=sys.stderr,
-            )
-            return 3
-        except requests.exceptions.RequestException as err:
-            print(f"Error HTTP contra Ollama: {err}", file=sys.stderr)
-            return 3
-        except (ValueError, KeyError, TypeError) as err:
-            print(f"Error interpretando P{q.qno}: {err}", file=sys.stderr)
-            return 1
-
-    ordered = {str(k): answers[str(k)] for k in sorted(int(x) for x in answers)}
-    blob = json.dumps(ordered, ensure_ascii=False, indent=2)
-    print('\n--- Copia esto dentro de config.json en la clave "answers" ---')
-    print(blob)
-    if answers_out is not None:
-        answers_out.write_text(blob, encoding="utf-8")
-        print(f"\nTambién guardado en {answers_out}")
-    return 0
-
-
 def cmd_retake_answers(
     config: dict[str, Any],
     answers_out: Path | None,
-    ollama_url: str | None,
+    api_key: str | None,
     model: str | None,
-    skip_ollama: bool,
+    skip_llm: bool,
 ) -> int:
     """
     Tras entregar un intento: GET review.php, conserva índices de preguntas bien
-    respondidas, toma la clave correcta del HTML si está revelada; si no, pide a Ollama
+    respondidas, toma la clave correcta del HTML si está revelada; si no, pide a Gemini
     solo esas preguntas. Útil para preparar ``answers`` de un nuevo intento.
     """
     base_quiz = config.get("base_url", DEFAULT_BASE)
@@ -846,18 +880,8 @@ def cmd_retake_answers(
         )
         return 1
 
-    oc = config.get("ollama") or {}
-    env_base = (os.environ.get("OLLAMA_BASE_URL") or "").strip()
-    obase = (
-        ollama_url
-        or env_base
-        or oc.get("base_url")
-        or "http://127.0.0.1:11434"
-    ).rstrip("/")
-    omodel = model or oc.get("model") or "llama3.2"
-
     answers: dict[str, int] = {}
-    ollama_pending: list[ReviewEntry] = []
+    llm_pending: list[ReviewEntry] = []
 
     for e in entries:
         if e.is_user_correct:
@@ -865,33 +889,32 @@ def cmd_retake_answers(
         elif e.revealed_correct_index is not None:
             answers[str(e.qno)] = e.revealed_correct_index
         else:
-            ollama_pending.append(e)
+            llm_pending.append(e)
 
-    if ollama_pending:
-        if skip_ollama:
-            qs = ", ".join(f"P{p.qno}" for p in ollama_pending)
+    if llm_pending:
+        if skip_llm:
+            qs = ", ".join(f"P{p.qno}" for p in llm_pending)
             print(
                 f"No se reveló la opción correcta en el HTML para: {qs}. "
-                "Ejecuta sin --skip-ollama con Ollama, o asigna esas claves a mano.",
+                "Ejecuta sin --skip-llm con GEMINI_API_KEY, o asigna esas claves a mano.",
                 file=sys.stderr,
             )
             return 2
-        for e in ollama_pending:
-            prompt = build_ollama_question_prompt(e.question)
+        try:
+            gkey, gmodel = resolve_gemini_credentials(config, api_key, model)
+        except ValueError as err:
+            print(err, file=sys.stderr)
+            return 2
+        for e in llm_pending:
+            prompt = build_mc_question_prompt(e.question)
             try:
-                raw = ollama_chat(obase, omodel, SYSTEM_OLLAMA, prompt)
+                raw = gemini_generate(gkey, gmodel, SYSTEM_MC_CHOICE, prompt)
                 choice = parse_choice_from_llm(raw, len(e.question.options))
                 answers[str(e.qno)] = choice
                 lab = e.question.options[choice][:70] if choice < len(e.question.options) else "?"
                 print(f"P{e.qno} (solo IA) -> [{choice}] {lab}", flush=True)
-            except requests.exceptions.ConnectionError as err:
-                print(
-                    f"No hay conexión con Ollama en {obase!r} ({err}).",
-                    file=sys.stderr,
-                )
-                return 3
-            except requests.exceptions.RequestException as err:
-                print(f"Error HTTP contra Ollama: {err}", file=sys.stderr)
+            except RuntimeError as err:
+                print(f"Error de la API de Gemini: {err}", file=sys.stderr)
                 return 3
             except (ValueError, KeyError, TypeError) as err:
                 print(f"Error interpretando P{e.qno}: {err}", file=sys.stderr)
@@ -902,8 +925,8 @@ def cmd_retake_answers(
         idx = answers[str(e.qno)]
         if e.is_user_correct:
             src = "mantenida (ya correcta)"
-        elif e in ollama_pending:
-            src = "modelo Ollama (revisión no mostró la clave)"
+        elif e in llm_pending:
+            src = "modelo Gemini (revisión no mostró la clave)"
         else:
             src = "tomada de la revisión (opción marcada correcta)"
         lab = (
@@ -1032,7 +1055,7 @@ def cmd_submit(config: dict[str, Any], dry_run: bool) -> int:
     if "review.php" in resp.url:
         print("\nParece que el intento quedó entregado (página de revisión).")
         print(
-            "Para combinar aciertos + corregir fallidas con review/Ollama: "
+            "Para combinar aciertos + corregir fallidas con review y Gemini: "
             "`python moodle_quiz.py retake-answers --config config.json`"
         )
     elif "summary.php" in resp.url:
@@ -1094,35 +1117,42 @@ def main() -> int:
     _add_config_arg(p_run)
     p_run.add_argument("--dry-run", action="store_true")
 
-    p_ollama = sub.add_parser(
-        "ollama-answers",
-        help="Generar respuestas (índices 0–n) con Ollama usando el texto del intento",
+    p_gemini = sub.add_parser(
+        "gemini-answers",
+        help="Generar respuestas (índices 0–n) con Google Gemini usando el texto del intento",
     )
-    _add_config_arg(p_ollama)
-    p_ollama.add_argument(
+    _add_config_arg(p_gemini)
+    p_gemini.add_argument(
         "--answers-out",
         type=Path,
         default=None,
         metavar="ARCHIVO",
         help="Guardar el JSON de answers en un archivo",
     )
-    p_ollama.add_argument(
-        "--ollama-url",
+    p_gemini.add_argument(
+        "--api-key",
         default=None,
-        help="URL base de Ollama (por defecto: config ollama.base_url o http://127.0.0.1:11434)",
+        metavar="KEY",
+        help=(
+            "Clave de Gemini (prioridad tras esta opción: variable GEMINI_API_KEY, "
+            'luego config "gemini".api_key)'
+        ),
     )
-    p_ollama.add_argument(
+    p_gemini.add_argument(
         "--model",
         "-m",
         default=None,
-        help="Modelo Ollama (por defecto: config ollama.model o llama3.2)",
+        help=(
+            "Modelo (p. ej. gemini-2.5-flash; por defecto: GEMINI_MODEL, "
+            'config gemini.model, o gemini-2.5-flash)'
+        ),
     )
 
     p_retake = sub.add_parser(
         "retake-answers",
         help=(
             "Con el intento ya entregado: lee review.php, mantiene respuestas correctas "
-            "y corrige fallidas (Opción correcta en HTML o, si no aparece, Ollama)"
+            "y corrige fallidas (opción correcta en HTML o, si no aparece, Gemini)"
         ),
     )
     _add_config_arg(p_retake)
@@ -1134,22 +1164,22 @@ def main() -> int:
         help="Guardar el JSON de answers en un archivo",
     )
     p_retake.add_argument(
-        "--ollama-url",
+        "--api-key",
         default=None,
-        help="URL base de Ollama (por defecto: env/config como ollama-answers)",
+        metavar="KEY",
+        help="Clave Gemini (opcional si está GEMINI_API_KEY o en config)",
     )
     p_retake.add_argument(
         "--model",
         "-m",
         default=None,
-        help="Modelo Ollama",
+        help="Modelo Gemini (mismos defaults que gemini-answers)",
     )
     p_retake.add_argument(
-        "--skip-ollama",
+        "--skip-llm",
         action="store_true",
-        help="No consultar Ollama (falla si la revisión no muestra la opción correcta en alguna fallida)",
+        help="No consultar Gemini (falla si alguna fallida no muestra la clave correcta en el HTML)",
     )
-
     args = parser.parse_args()
     if not args.config.exists():
         print(f"No existe {args.config}. Copia config.example.json -> config.json", file=sys.stderr)
@@ -1164,20 +1194,20 @@ def main() -> int:
     if args.command == "run":
         cmd_fetch(config, Path("quiz_snapshot.json"))
         return cmd_submit(config, args.dry_run)
-    if args.command == "ollama-answers":
-        return cmd_ollama_answers(
+    if args.command == "gemini-answers":
+        return cmd_gemini_answers(
             config,
             args.answers_out,
-            args.ollama_url,
+            args.api_key,
             args.model,
         )
     if args.command == "retake-answers":
         return cmd_retake_answers(
             config,
             args.answers_out,
-            args.ollama_url,
+            args.api_key,
             args.model,
-            args.skip_ollama,
+            args.skip_llm,
         )
     return 2
 
