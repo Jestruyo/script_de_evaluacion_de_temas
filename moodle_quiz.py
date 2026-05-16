@@ -297,8 +297,37 @@ class ReviewEntry:
     question: Question
 
 
+def _css_classes(tag) -> set[str]:
+    """Clases CSS de un tag BeautifulSoup."""
+    raw = tag.get("class") if tag else None
+    if not raw:
+        return set()
+    if isinstance(raw, list):
+        return {str(c) for c in raw}
+    return set(str(raw).split())
+
+
 def _revealed_correct_index_from_review_block(block) -> int | None:
-    """Índice de la opción marcada como correcta en la revisión (icono grade_correct / texto)."""
+    """
+    Índice de la opción que Moodle marca como correcta en review.php.
+
+    Orden:
+    1. Filas bajo `.answer` con clase `correct` y sin `incorrect` (p. ej. ``<div class="r1 correct">``).
+       La fila elegida pero errónea suele llevar solo ``incorrect``.
+    2. Icono `grade_correct` / alt «Correcta» (sin ``grade_incorrect`` en esa fila).
+    """
+    # 1) Patrón principal en temas Boost / UNIR (más fiable que solo el icono)
+    for row in block.select(".answer > div"):
+        cl = _css_classes(row)
+        if "correct" in cl and "incorrect" not in cl:
+            inp = row.select_one('input[type="radio"]')
+            if inp is not None and inp.get("value") is not None:
+                try:
+                    return int(inp["value"])
+                except (ValueError, TypeError):
+                    continue
+
+    # 2) Fallback: icono estándar de Moodle
     for row in block.select(".answer > div"):
         img = row.select_one('img[src*="grade_correct"]')
         if img is None:
@@ -308,7 +337,6 @@ def _revealed_correct_index_from_review_block(block) -> int | None:
             )
         if img is None:
             continue
-        # No confundir con la X del usuario en la opción incorrecta
         if row.select_one('img[src*="grade_incorrect"]'):
             continue
         inp = row.select_one('input[type="radio"]')
@@ -899,6 +927,9 @@ def cmd_retake_answers(
         "pega el JSON arriba en `answers`, ejecuta `fetch` y luego `submit`."
     )
     return 0
+
+
+def save_snapshot(quiz: QuizAttempt, path: Path) -> None:
     data = {
         "attempt": quiz.attempt_id,
         "cmid": quiz.cmid,
