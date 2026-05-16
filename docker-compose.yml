@@ -11,8 +11,8 @@ services:
       - ./config.json:/app/config.json:ro
       - ./out:/app/out
     # Opcional: clave desde un .env local (añade .env a .gitignore; no lo subas)
-    # env_file:
-    #   - .env
+    env_file:
+      - .env
     # Opcional: cookie sin guardar en config.json
     # environment:
     #   MOODLE_QUIZ_COOKIE: ""
