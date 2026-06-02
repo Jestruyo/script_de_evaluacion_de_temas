@@ -8,32 +8,50 @@ Herramienta en Python que reproduce el flujo de un intento de **test en Moodle**
 
 Enfoque recomendado si **no** quieres instalar Python en el Mac: solo **Docker** (Desktop o Engine + Compose). Las respuestas automáticas usan la **API de Gemini** (modelo por defecto `gemini-2.5-flash`): necesitas una clave de [Google AI Studio](https://aistudio.google.com/) y conexión a Internet en el contenedor.
 
+Los comandos Docker están resumidos en un **`Makefile`** en la raíz del repo: en lugar de copiar líneas largas de `docker compose run …`, usa `make` (ver [Atajos con Make](#atajos-con-make-recomendado)).
+
 1. Clona el repo y coloca `config.json` en la raíz (con `base_url`, `attempt`, `cmid`, `cookie` o usa `MOODLE_QUIZ_COOKIE`).
 2. **Construir cliente y primera lectura (misma consola)** — como en **[Paso a paso, apartado 4](#4-reconstruir-la-imagen-y-leer-el-cuestionario-docker)**:
    ```bash
-   docker compose build moodle-quiz
-   docker compose run --rm moodle-quiz fetch --config /app/config.json
+   make build
+   make fetch
    ```
-3. **Clave de Gemini** (no la subas a Git): en el host, `export GEMINI_API_KEY='…'`, o crea un `.env` con `GEMINI_API_KEY=…` y descomenta `env_file: [.env]` en `docker-compose.yml`.
+3. **Clave de Gemini** (no la subas a Git): crea un `.env` con `GEMINI_API_KEY=…` (`.env` está en `.gitignore`; `docker-compose.yml` ya lo carga con `env_file`). Alternativa: `export GEMINI_API_KEY='…'` en el shell.
 4. Genera `answers` con la IA (el contenedor debe poder salir a la API de Google):
    ```bash
-   docker compose run --rm -it -e GEMINI_API_KEY moodle-quiz gemini-answers --config /app/config.json --answers-out /app/out/answers_gemini.json
+   make gemini
    ```
    Abre en tu Mac `./out/answers_gemini.json` y **copia** el JSON al campo `"answers"` de `config.json`.
-5. Simula envío:  
-   `docker compose run --rm -it moodle-quiz submit --config /app/config.json --dry-run`
-6. Entrega:  
-   `docker compose run --rm -it moodle-quiz submit --config /app/config.json`  
-   (Si `MOODLE_QUIZ_COOKIE` está vacío en el JSON, puedes exportarla en el host y pasarla:  
-   `MOODLE_QUIZ_COOKIE='…' docker compose run --rm -e MOODLE_QUIZ_COOKIE -it moodle-quiz submit --config /app/config.json`)
+5. Simula envío: `make dry-run`
+6. Entrega: `make submit`  
+   (Si `MOODLE_QUIZ_COOKIE` está vacío en el JSON, exporta la cookie en el host antes de cada comando; con `docker compose` manual añade `-e MOODLE_QUIZ_COOKIE`.)
 
 | Variable / detalle | Uso |
 |--------------------|-----|
-| `GEMINI_API_KEY` | Clave de API de Google AI Studio; pásala con `-e GEMINI_API_KEY` al `docker compose run` o con `env_file`. Alternativa: `--api-key` en el comando o (no recomendado en repos públicos) `"gemini": {"api_key": "…"}` en `config.json`. |
-| `GEMINI_MODEL` | (Opcional) Sobrescribe el modelo; por defecto `gemini-2.5-flash` o `gemini.model` en el JSON. |
-| Carpeta `out/` | Montada en `./out`; ahí se guardan `answers_gemini.json` y snapshots si usas `--snapshot /app/out/...`. |
+| `GEMINI_API_KEY` | Clave de API de Google AI Studio; ponla en `.env` (recomendado), expórtala en el shell, usa `--api-key` en el comando, o (no recomendado en repos públicos) `"gemini": {"api_key": "…"}` en `config.json`. |
+| `GEMINI_MODEL` | (Opcional) Sobrescribe el modelo; por defecto `gemini-2.5-flash` o `gemini.model` en el JSON. Con Make: `make gemini MODEL=gemini-2.0-flash`. |
+| Carpeta `out/` | Montada en `./out`; ahí se guardan `answers_gemini.json` y snapshots (`make snapshot` → `out/quiz_snapshot.json`). |
 
 **No necesitas** `python3` en el Mac si sigues solo este flujo (solo Docker).
+
+## Atajos con Make (recomendado)
+
+Desde la raíz del repo (`script_de_evaluacion_de_temas`), con `config.json` listo y `.env` con `GEMINI_API_KEY` si usarás IA:
+
+| Comando | Acción |
+|---------|--------|
+| `make help` | Lista todos los atajos (target por defecto) |
+| `make build` | `docker compose build moodle-quiz` |
+| `make fetch` | Ver preguntas del intento actual |
+| `make snapshot` | `fetch` + guarda `out/quiz_snapshot.json` |
+| `make gemini` | Genera `out/answers_gemini.json` con Gemini |
+| `make retake` | Tras entregar: `out/answers_retake.json` (review + Gemini) |
+| `make dry-run` | Simula envío sin mandar al campus |
+| `make submit` | Entrega el intento al campus |
+
+Opcional: `make gemini MODEL=gemini-2.0-flash` para probar otro modelo.
+
+Equivalentes `docker compose` completos siguen documentados más abajo por si prefieres no usar Make.
 
 La guía **ordenada** (incluye primer envío, `retake-answers` y segundo intento) está en [Paso a paso completo](#paso-a-paso-completo).
 
@@ -41,17 +59,18 @@ La guía **ordenada** (incluye primer envío, `retake-answers` y segundo intento
 
 Úsalos en este orden: ver el cuestionario, simular el envío y entregar.
 
-| Paso | Comando (Docker) | Comando (Python local, opcional) |
-|------|------------------|-----------------------------------|
-| **1. Ver preguntas** | `docker compose run --rm moodle-quiz fetch --config /app/config.json` | `python moodle_quiz.py fetch --config config.json` |
-| **2. Probar sin enviar** | `docker compose run --rm -it moodle-quiz submit --config /app/config.json --dry-run` | `python moodle_quiz.py submit --config config.json --dry-run` |
-| **3. Enviar al campus** | `docker compose run --rm -it moodle-quiz submit --config /app/config.json` | `python moodle_quiz.py submit --config config.json` |
+| Paso | Make | Docker (equivalente) | Python local (opcional) |
+|------|------|----------------------|-------------------------|
+| **1. Ver preguntas** | `make fetch` | `docker compose run --rm moodle-quiz fetch --config /app/config.json` | `python moodle_quiz.py fetch --config config.json` |
+| **2. Probar sin enviar** | `make dry-run` | `docker compose run --rm -it moodle-quiz submit --config /app/config.json --dry-run` | `python moodle_quiz.py submit --config config.json --dry-run` |
+| **3. Enviar al campus** | `make submit` | `docker compose run --rm -it moodle-quiz submit --config /app/config.json` | `python moodle_quiz.py submit --config config.json` |
 
-Antes de ejecutarlos necesitas `config.json` con `attempt`, `cmid`, `answers` y sesión (`cookie` o `MOODLE_QUIZ_COOKIE`). La primera vez: `docker compose build moodle-quiz`. Para **`gemini-answers`** necesitas `GEMINI_API_KEY` (u otra fuente de clave indicada abajo). En el paso 3, si `confirm_submit` es `true`, el script pregunta en consola; por eso Docker usa `-it` en `submit`. Con `"confirm_submit": false` puedes quitar `-it`.
+Antes de ejecutarlos necesitas `config.json` con `attempt`, `cmid`, `answers` y sesión (`cookie` o `MOODLE_QUIZ_COOKIE`). La primera vez: `make build`. Para **`gemini-answers`** (`make gemini`) necesitas `GEMINI_API_KEY` en `.env` o en el entorno. En el paso 3, si `confirm_submit` es `true`, el script pregunta en consola; por eso Make usa `-it` en `submit`. Con `"confirm_submit": false` puedes quitar `-it`.
 
 ## Requisitos
 
 - **Docker** con Docker Compose (flujo principal de este README)
+- **Make** (incluido en macOS/Linux; atajos en el `Makefile` del repo)
 - Python 3.10+ **solo** si ejecutas el script fuera del contenedor
 - Una sesión válida en el campus (cookies de navegador)
 - `attempt` y `cmid` correctos para el intento abierto del cuestionario
@@ -70,14 +89,20 @@ pip install -r requirements.txt
 ### Google Gemini (IA para `gemini-answers` y `retake-answers`)
 
 1. En [Google AI Studio](https://aistudio.google.com/) crea un proyecto/API key si aún no tienes uno.
-2. En el terminal del host (recomendado): `export GEMINI_API_KEY='tu_clave'`.
-3. **Docker:**
+2. Guarda la clave en `.env` (`GEMINI_API_KEY=…`) o expórtala: `export GEMINI_API_KEY='tu_clave'`.
+3. **Docker (Make):**
 
    ```bash
-   docker compose run --rm -it -e GEMINI_API_KEY moodle-quiz gemini-answers --config /app/config.json --answers-out /app/out/answers_gemini.json
+   make gemini
    ```
 
-   Opcionalmente: `--model gemini-2.5-flash` (ya es el defecto si no defines `GEMINI_MODEL` ni `gemini.model` en el JSON).
+   Opcional: `make gemini MODEL=gemini-2.0-flash` (por defecto `gemini-2.5-flash` si no defines `GEMINI_MODEL` ni `gemini.model` en el JSON).
+
+   **Equivalente sin Make:**
+
+   ```bash
+   docker compose run --rm -it moodle-quiz gemini-answers --config /app/config.json --answers-out /app/out/answers_gemini.json
+   ```
 
 4. **Solo Python en tu máquina** (venv con `pip install -r requirements.txt`):
 
@@ -185,9 +210,13 @@ python moodle_quiz.py run --dry-run
 python moodle_quiz.py run -c config.json
 ```
 
-Equivalentes **Docker** (`./out` montado en `/app/out`):
+Equivalentes **Make** / **Docker** (`./out` montado en `/app/out`):
 
 ```bash
+make snapshot          # out/quiz_snapshot.json
+make retake            # out/answers_retake.json
+
+# Sin Make:
 docker compose run --rm moodle-quiz fetch --config /app/config.json --snapshot /app/out/backup.json
 docker compose run --rm -it moodle-quiz run --dry-run
 docker compose run --rm -it moodle-quiz run --config /app/config.json
@@ -206,21 +235,21 @@ Usar esto solo donde la normativa del curso lo permita.
 
 Flujo **solo Docker**: el contenedor lee `/app/config.json` (tu archivo `config.json` en la raíz del repo). Ese archivo va montado **solo lectura**: los JSON generados (`./out/answers_gemini.json`, `./out/answers_retake.json`, …) los abres en el editor y **copias** el contenido en la clave `"answers"` del `config.json` en el Mac.
 
-El bloque **recomendado** (`docker compose build moodle-quiz` y `docker compose run … fetch` en la misma consola) está en el **[apartado 4](#4-reconstruir-la-imagen-y-leer-el-cuestionario-docker)** (tras crear `config.json`).
+El bloque **recomendado** (`make build` y `make fetch` en la misma consola) está en el **[apartado 4](#4-reconstruir-la-imagen-y-leer-el-cuestionario-docker)** (tras crear `config.json`).
 
 ### Resumen rápido (orden)
 
 | Paso | Apartado doc | Qué haces |
 |------|----------------|-----------|
-| **0.** | **[1](#1-preparar-el-proyecto-una-vez-por-máquina)** (opcional) | Si usarás IA: obtén `GEMINI_API_KEY` en Google AI Studio y expórtala en el shell o `.env`. |
+| **0.** | **[1](#1-preparar-el-proyecto-una-vez-por-máquina)** (opcional) | Si usarás IA: `GEMINI_API_KEY` en `.env` o exportada en el shell. |
 | **1.** | **[2](#2-en-el-navegador-moodle)** | Intent activo → URL (`attempt`, `cmid`) + **cookie** o `MOODLE_QUIZ_COOKIE`. |
 | **2.** | **[3](#3-crear-configjson)** | `config.json`: `base_url`, `attempt`, `cmid`, sesión; `"answers"` puede ser `{}`. |
-| **3.** | **[4](#4-reconstruir-la-imagen-y-leer-el-cuestionario-docker)** | **Docker en un solo bloque:** `docker compose build moodle-quiz` + `docker compose run --rm moodle-quiz fetch --config /app/config.json` |
-| **4.** | **[5](#5-obtener-answers-manual-o-con-gemini)** | Manual en JSON o `gemini-answers` → pegas `"answers"` y revisas. |
-| **5.** | **[6–7](#6-simular-el-envío-sin-entregar)** | `submit --dry-run` y `submit`. |
-| **6.** | **[8](#8-opcional-segundo-intento-con-retake-answers)** (opcional) | Sin cambiar `attempt`, `retake-answers` → pegas `answers_retake` → navegador: **nuevo** intento → **nuevo** `attempt` → de nuevo **[4](#4-reconstruir-la-imagen-y-leer-el-cuestionario-docker)** y `submit`. |
+| **3.** | **[4](#4-reconstruir-la-imagen-y-leer-el-cuestionario-docker)** | **`make build`** + **`make fetch`** |
+| **4.** | **[5](#5-obtener-answers-manual-o-con-gemini)** | Manual en JSON o **`make gemini`** → pegas `"answers"` y revisas. |
+| **5.** | **[6–7](#6-simular-el-envío-sin-entregar)** | **`make dry-run`** y **`make submit`**. |
+| **6.** | **[8](#8-opcional-segundo-intento-con-retake-answers)** (opcional) | Sin cambiar `attempt`, **`make retake`** → pegas `answers_retake` → navegador: **nuevo** intento → **nuevo** `attempt` → de nuevo **[4](#4-reconstruir-la-imagen-y-leer-el-cuestionario-docker)** y `make submit`. |
 
-Tras **`git pull`** o cambiar `moodle_quiz.py`: vuelve a ejecutar el **`build`** del apartado **4** (o solo `docker compose build moodle-quiz` si ya confías en la imagen y solo cambió el código).
+Tras **`git pull`** o cambiar `moodle_quiz.py`: vuelve a ejecutar **`make build`** (apartado **4**).
 
 Los apartados siguientes detallan cada fase. Variantes con **Python en el PC** se indican donde aplica.
 
@@ -231,8 +260,8 @@ Los apartados siguientes detallan cada fase. Variantes con **Python en el PC** s
 ```bash
 cd script_de_evaluacion_de_temas
 
-# Si usarás gemini-answers: export GEMINI_API_KEY='…' en esta misma consola,
-# o prepara .env con GEMINI_API_KEY=… (.env está en .gitignore).
+# Si usarás make gemini: GEMINI_API_KEY=… en .env (recomendado; .env está en .gitignore)
+# o export GEMINI_API_KEY='…' en esta misma consola.
 ```
 
 **Solo si no usas Docker** para el cliente:
@@ -273,7 +302,7 @@ En la raíz del repo (puedes partir de un JSON vacío de respuestas y rellenar d
 }
 ```
 
-- Si prefieres no guardar la cookie en disco: deja `"cookie": ""` y en terminal `export MOODLE_QUIZ_COOKIE='...'` antes de cada comando (en Docker: añade `-e MOODLE_QUIZ_COOKIE` al `docker compose run` cuando haga falta).
+- Si prefieres no guardar la cookie en disco: deja `"cookie": ""` y en terminal `export MOODLE_QUIZ_COOKIE='...'` antes de cada `make fetch` / `make submit` (con `docker compose` manual añade `-e MOODLE_QUIZ_COOKIE`).
 
 ### 4. Reconstruir la imagen y leer el cuestionario (Docker)
 
@@ -281,8 +310,8 @@ Desde la raíz (`script_de_evaluacion_de_temas`): reconstruye el servicio **`moo
 
 ```bash
 cd script_de_evaluacion_de_temas
-docker compose build moodle-quiz
-docker compose run --rm moodle-quiz fetch --config /app/config.json
+make build
+make fetch
 ```
 
 **Python en el PC (opcional):**
@@ -297,11 +326,10 @@ Debes ver el mismo número de preguntas que en el navegador y textos coherentes.
 
 **Opción A — Manual:** edita `config.json` y rellena `"answers"` con índices `0`…`3` según la lista `[0] a.`, `[1] b.`, … del `fetch`.
 
-**Opción B — Gemini desde Docker:** el contenedor necesita salida HTTPS a la API de Google y la variable `GEMINI_API_KEY` (no la pongas en un commit):
+**Opción B — Gemini desde Docker:** el contenedor necesita salida HTTPS a la API de Google y `GEMINI_API_KEY` en `.env` o en el entorno (no la subas a Git):
 
 ```bash
-export GEMINI_API_KEY='tu_clave'
-docker compose run --rm -it -e GEMINI_API_KEY moodle-quiz gemini-answers --config /app/config.json --answers-out /app/out/answers_gemini.json
+make gemini
 ```
 
 Abre en tu Mac `./out/answers_gemini.json`, **copia** el objeto y **pégalo** en `"answers"` dentro de `config.json` (sustituye `{}`). Revísalo.
@@ -315,10 +343,10 @@ python moodle_quiz.py gemini-answers --config config.json --answers-out answers_
 
 ### 6. Simular el envío (sin entregar)
 
-**Docker:**
+**Docker (Make):**
 
 ```bash
-docker compose run --rm -it moodle-quiz submit --config /app/config.json --dry-run
+make dry-run
 ```
 
 **Python en el PC (opcional):**
@@ -331,10 +359,10 @@ Comprueba el bloque “Payload de respuestas”.
 
 ### 7. Enviar el primer intento al campus
 
-**Docker:**
+**Docker (Make):**
 
 ```bash
-docker compose run --rm -it moodle-quiz submit --config /app/config.json
+make submit
 ```
 
 **Python en el PC (opcional):**
@@ -350,17 +378,16 @@ Si `confirm_submit` es `true`, escribe `s` cuando pregunte. Si todo va bien, aca
 Solo si el curso permite **varios intentos** y quieres combinar lo que acertaste con las correcciones de la página de revisión (más Gemini solo donde el HTML no muestre la clave):
 
 1. **No cambies** `attempt` ni `cmid` todavía: deben seguir siendo los del intento que acabas de cerrar (debe coincidir con `review.php?attempt=…&cmid=…`).
-2. Ejecuta:
+2. Ejecuta (con `GEMINI_API_KEY` en `.env` si hace falta consultar Gemini):
 
    ```bash
-   export GEMINI_API_KEY='tu_clave'   # si hace falta consultar Gemini
-   docker compose run --rm -it -e GEMINI_API_KEY moodle-quiz retake-answers --config /app/config.json --answers-out /app/out/answers_retake.json
+   make retake
    ```
 
 3. Copia el contenido de `./out/answers_retake.json` a la clave `"answers"` de `config.json` en el Mac.
 4. En el **navegador**, inicia un **nuevo** intento del mismo test (si el botón existe). Al cargar las preguntas, la URL `attempt.php` tendrá un **`attempt` nuevo**.
 5. Sustituye en `config.json` ese **`attempt`** (y `cmid` solo si cambiases de actividad). Renueva cookie si caducó.
-6. Vuelve a ejecutar: `fetch` → `submit --dry-run` → `submit`.
+6. Vuelve a ejecutar: `make fetch` → `make dry-run` → `make submit`.
 
 Si usas `retake-answers --skip-llm`, no se llama a Gemini; el comando fallará si alguna pregunta fallida no muestra en la revisión cuál era la opción correcta.
 
@@ -370,15 +397,14 @@ Actualiza **`cmid`** y **`attempt`** según la nueva URL de `attempt.php`. Renue
 
 ## Uso con Docker (detalles)
 
-El flujo principal está al inicio de este documento (**Solo Docker (+ Google Gemini)**) y en la tabla de **Los tres comandos principales**. Aquí, notas extra:
+El flujo principal está al inicio (**Solo Docker (+ Google Gemini)**), en **[Atajos con Make](#atajos-con-make-recomendado)** y en la tabla de **Los tres comandos principales**. Aquí, notas extra:
 
-- `docker-compose.yml` monta `./config.json` en `/app/config.json` (solo lectura) y `./out` en `/app/out` para `answers_gemini.json` y snapshots. El `Dockerfile` usa por defecto `fetch` con ese archivo.
-- Si **actualizas** el repo (`git pull`) o cambias `moodle_quiz.py`, **reconstruye** la imagen para que el contenedor lleve el script nuevo: `docker compose build moodle-quiz` (si ves `invalid choice: 'retake-answers'`, suele ser que no reconstruiste después de añadir ese comando).
-- Para **confirmación interactiva** en `submit`, usa **`-it`**. Si usas `confirm_submit: false`, no hace falta.
-- Snapshot en el host:  
-  `docker compose run --rm moodle-quiz fetch --config /app/config.json --snapshot /app/out/quiz_snapshot.json`
-- Cookie sin guardarla en `config.json`:  
-  `MOODLE_QUIZ_COOKIE='…' docker compose run --rm -e MOODLE_QUIZ_COOKIE moodle-quiz fetch --config /app/config.json`
+- El **`Makefile`** envuelve los `docker compose run` habituales; ejecuta `make help` para ver la lista.
+- `docker-compose.yml` monta `./config.json` en `/app/config.json` (solo lectura) y `./out` en `/app/out` para `answers_gemini.json` y snapshots. Carga `.env` con `env_file` (p. ej. `GEMINI_API_KEY`). El `Dockerfile` usa por defecto `fetch` con ese archivo.
+- Si **actualizas** el repo (`git pull`) o cambias `moodle_quiz.py`, **reconstruye** la imagen: `make build` (si ves `invalid choice: 'retake-answers'`, suele ser que no reconstruiste después de añadir ese comando).
+- Para **confirmación interactiva** en `submit`, Make usa **`-it`**. Si usas `confirm_submit: false`, no hace falta.
+- Snapshot en el host: `make snapshot` (o el `docker compose run … --snapshot` equivalente).
+- Cookie sin guardarla en `config.json`: exporta `MOODLE_QUIZ_COOKIE` en el host antes de `make fetch` / `make submit`; con `docker compose` manual añade `-e MOODLE_QUIZ_COOKIE`.
 
 ## Solución de problemas
 
@@ -389,7 +415,7 @@ El flujo principal está al inicio de este documento (**Solo Docker (+ Google Ge
 | Redirige al login | Cookie incompleta o expirada. |
 | `submit` no avanza en Docker | Añade `-it` o pon `"confirm_submit": false`. |
 | Faltan preguntas en `answers` | Debe existir una clave por cada número de pregunta mostrado en `fetch`. |
-| `invalid choice: 'retake-answers'` en Docker | La imagen se construyó con un `moodle_quiz.py` viejo. Ejecuta `docker compose build moodle-quiz` y vuelve a lanzar el `docker compose run …`. |
+| `invalid choice: 'retake-answers'` en Docker | La imagen se construyó con un `moodle_quiz.py` viejo. Ejecuta `make build` y vuelve a lanzar el comando. |
 
 ## Aviso de uso responsable
 
