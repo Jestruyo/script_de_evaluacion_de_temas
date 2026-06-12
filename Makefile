@@ -1,7 +1,7 @@
 # Atajos para docker compose. Requiere config.json en la raíz y .env con GEMINI_API_KEY (para gemini/retake).
 # Uso: make help
 
-.PHONY: help build fetch snapshot gemini retake dry-run submit
+.PHONY: help build fetch snapshot gemini retake dry-run submit config-ui
 
 COMPOSE   := docker compose
 RUN       := $(COMPOSE) run --rm
@@ -23,6 +23,7 @@ help:
 	@echo "  make retake     Tras entregar: out/answers_retake.json (review + Gemini)"
 	@echo "  make dry-run    Simula envío sin mandar al campus"
 	@echo "  make submit     Entrega el intento al campus"
+	@echo "  make config-ui  Abre editor web local de config.json (puerto 8765)"
 	@echo ""
 	@echo "Opcional: make gemini MODEL=gemini-2.0-flash"
 
@@ -46,3 +47,6 @@ dry-run:
 
 submit:
 	$(RUN_IT) moodle-quiz submit $(CONFIG)
+
+config-ui:
+	python3 config_ui_server.py --open

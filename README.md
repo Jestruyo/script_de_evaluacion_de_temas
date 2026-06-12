@@ -48,8 +48,27 @@ Desde la raíz del repo (`script_de_evaluacion_de_temas`), con `config.json` lis
 | `make retake` | Tras entregar: `out/answers_retake.json` (review + Gemini) |
 | `make dry-run` | Simula envío sin mandar al campus |
 | `make submit` | Entrega el intento al campus |
+| `make config-ui` | Editor web local de `config.json` (http://127.0.0.1:8765) |
 
 Opcional: `make gemini MODEL=gemini-2.0-flash` para probar otro modelo.
+
+### Editor web de `config.json`
+
+Si prefieres no editar JSON a mano, abre el formulario local:
+
+```bash
+make config-ui
+```
+
+Se abre el navegador en **http://127.0.0.1:8765**. Desde ahí puedes:
+
+- Pegar la **URL** de `attempt.php` para rellenar `attempt`, `cmid` y `base_url`
+- Pegar la **cookie** de DevTools
+- Pulsar **Generar respuestas (Gemini)** — guarda `config.json`, ejecuta Docker (como `make gemini`), muestra el JSON y lo guarda en `answers`
+- Pulsar **Simular envío** o **Enviar al campus** — equivalente a `make dry-run` / `make submit` (con confirmación en el navegador)
+- Importar manualmente **`out/answers_gemini.json`** o **`out/answers_retake.json`**
+
+El servidor solo escucha en `127.0.0.1` (tu Mac). Necesitas **Docker en marcha** y **`GEMINI_API_KEY` en `.env`** para Gemini. Detén el servidor con **Ctrl+C** en la terminal.
 
 Equivalentes `docker compose` completos siguen documentados más abajo por si prefieres no usar Make.
 
@@ -71,6 +90,7 @@ Antes de ejecutarlos necesitas `config.json` con `attempt`, `cmid`, `answers` y 
 
 - **Docker** con Docker Compose (flujo principal de este README)
 - **Make** (incluido en macOS/Linux; atajos en el `Makefile` del repo)
+- **Python 3** en el Mac para `make config-ui` (solo biblioteca estándar; el flujo Docker no lo requiere)
 - Python 3.10+ **solo** si ejecutas el script fuera del contenedor
 - Una sesión válida en el campus (cookies de navegador)
 - `attempt` y `cmid` correctos para el intento abierto del cuestionario
@@ -287,7 +307,7 @@ Cada **nuevo intento** o **otro test** del curso suele cambiar al menos `attempt
 
 ### 3. Crear `config.json`
 
-En la raíz del repo (puedes partir de un JSON vacío de respuestas y rellenar después):
+En la raíz del repo (puedes partir de un JSON vacío de respuestas y rellenar después), o usa **`make config-ui`** para editarlo en el navegador.
 
 ```json
 {
@@ -400,6 +420,7 @@ Actualiza **`cmid`** y **`attempt`** según la nueva URL de `attempt.php`. Renue
 El flujo principal está al inicio (**Solo Docker (+ Google Gemini)**), en **[Atajos con Make](#atajos-con-make-recomendado)** y en la tabla de **Los tres comandos principales**. Aquí, notas extra:
 
 - El **`Makefile`** envuelve los `docker compose run` habituales; ejecuta `make help` para ver la lista.
+- **`make config-ui`** sirve `config-editor.html` y escribe `config.json` en el host (puerto 8765).
 - `docker-compose.yml` monta `./config.json` en `/app/config.json` (solo lectura) y `./out` en `/app/out` para `answers_gemini.json` y snapshots. Carga `.env` con `env_file` (p. ej. `GEMINI_API_KEY`). El `Dockerfile` usa por defecto `fetch` con ese archivo.
 - Si **actualizas** el repo (`git pull`) o cambias `moodle_quiz.py`, **reconstruye** la imagen: `make build` (si ves `invalid choice: 'retake-answers'`, suele ser que no reconstruiste después de añadir ese comando).
 - Para **confirmación interactiva** en `submit`, Make usa **`-it`**. Si usas `confirm_submit: false`, no hace falta.

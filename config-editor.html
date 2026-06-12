@@ -1,0 +1,832 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Moodle Quiz — asistente local</title>
+  <style>
+    :root {
+      --bg: #0c0f14;
+      --surface: #151b24;
+      --surface2: #1c2430;
+      --border: #2a3544;
+      --text: #eef2f7;
+      --muted: #8fa0b8;
+      --accent: #5b8def;
+      --accent-soft: rgba(91, 141, 239, 0.12);
+      --purple: #8b7cf6;
+      --purple-soft: rgba(139, 124, 246, 0.14);
+      --ok: #34d399;
+      --ok-soft: rgba(52, 211, 153, 0.12);
+      --warn: #fbbf24;
+      --err: #f87171;
+      --err-soft: rgba(248, 113, 113, 0.12);
+      --radius: 12px;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "SF Pro Text", system-ui, -apple-system, sans-serif;
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.5;
+      min-height: 100vh;
+    }
+    .wrap {
+      max-width: 640px;
+      margin: 0 auto;
+      padding: 2rem 1.25rem 4rem;
+    }
+    header { margin-bottom: 2rem; }
+    header h1 {
+      font-size: 1.5rem;
+      font-weight: 650;
+      margin: 0 0 0.35rem;
+      letter-spacing: -0.02em;
+    }
+    header p { margin: 0; color: var(--muted); font-size: 0.92rem; }
+
+    .steps {
+      display: flex;
+      gap: 0.5rem;
+      margin-bottom: 1.5rem;
+    }
+    .step-dot {
+      flex: 1;
+      text-align: center;
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--muted);
+      padding: 0.5rem 0.25rem;
+      border-radius: 8px;
+      background: var(--surface);
+      border: 1px solid transparent;
+      transition: 0.2s;
+    }
+    .step-dot.active {
+      color: var(--accent);
+      background: var(--accent-soft);
+      border-color: rgba(91, 141, 239, 0.25);
+    }
+    .step-dot.done {
+      color: var(--ok);
+      background: var(--ok-soft);
+    }
+
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 1.25rem;
+      margin-bottom: 1rem;
+    }
+    .card-head {
+      display: flex;
+      align-items: baseline;
+      gap: 0.6rem;
+      margin-bottom: 1rem;
+    }
+    .card-num {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 1.6rem;
+      height: 1.6rem;
+      border-radius: 50%;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      font-size: 0.78rem;
+      font-weight: 700;
+      color: var(--muted);
+      flex-shrink: 0;
+    }
+    .card-title { font-size: 1rem; font-weight: 600; margin: 0; }
+    .card-desc { font-size: 0.82rem; color: var(--muted); margin: 0.15rem 0 0; }
+
+    label {
+      display: block;
+      font-size: 0.8rem;
+      font-weight: 500;
+      color: var(--muted);
+      margin-bottom: 0.4rem;
+    }
+    input[type="text"], textarea {
+      width: 100%;
+      padding: 0.65rem 0.75rem;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      background: var(--bg);
+      color: var(--text);
+      font: inherit;
+      font-size: 0.9rem;
+    }
+    input:focus, textarea:focus {
+      outline: none;
+      border-color: var(--accent);
+      box-shadow: 0 0 0 3px var(--accent-soft);
+    }
+    textarea {
+      resize: vertical;
+      min-height: 5.5rem;
+      font-family: ui-monospace, "SF Mono", monospace;
+      font-size: 0.78rem;
+      line-height: 1.45;
+    }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+    }
+    .badge {
+      font-size: 0.78rem;
+      padding: 0.25rem 0.55rem;
+      border-radius: 999px;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      color: var(--muted);
+    }
+    .badge.ok { color: var(--ok); border-color: rgba(52, 211, 153, 0.35); background: var(--ok-soft); }
+    .badge.warn { color: var(--warn); border-color: rgba(251, 191, 36, 0.35); }
+
+    .answers-panel {
+      background: var(--bg);
+      border: 1px dashed var(--border);
+      border-radius: 10px;
+      padding: 1rem;
+      min-height: 4.5rem;
+    }
+    .answers-empty {
+      text-align: center;
+      color: var(--muted);
+      font-size: 0.88rem;
+      padding: 0.5rem 0;
+    }
+    .answers-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.45rem;
+    }
+    .answer-chip-wrap {
+      position: relative;
+    }
+    .answer-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 0.35rem;
+      padding: 0.35rem 0.65rem;
+      border-radius: 8px;
+      background: var(--purple-soft);
+      border: 1px solid rgba(139, 124, 246, 0.3);
+      font-size: 0.85rem;
+      cursor: pointer;
+      color: inherit;
+      font-family: inherit;
+      transition: border-color 0.15s, transform 0.1s;
+    }
+    .answer-chip:hover {
+      border-color: rgba(139, 124, 246, 0.55);
+      transform: translateY(-1px);
+    }
+    .answer-chip.open {
+      border-color: var(--purple);
+      box-shadow: 0 0 0 3px var(--purple-soft);
+    }
+    .answer-chip .q { color: var(--muted); font-weight: 500; font-size: 0.78rem; }
+    .answer-chip .letter {
+      font-weight: 700;
+      color: var(--purple);
+      min-width: 1ch;
+      text-align: center;
+    }
+    .answer-picker {
+      position: absolute;
+      top: calc(100% + 4px);
+      left: 0;
+      z-index: 20;
+      display: flex;
+      gap: 0.25rem;
+      padding: 0.3rem;
+      background: var(--surface2);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+    }
+    .answer-picker button {
+      width: 2rem;
+      height: 2rem;
+      padding: 0;
+      border-radius: 6px;
+      font-weight: 700;
+      font-size: 0.85rem;
+      background: var(--bg);
+      border: 1px solid var(--border);
+      color: var(--text);
+    }
+    .answer-picker button:hover { border-color: var(--purple); color: var(--purple); }
+    .answer-picker button.selected {
+      background: var(--purple);
+      border-color: var(--purple);
+      color: #fff;
+    }
+    .answers-hint {
+      font-size: 0.78rem;
+      color: var(--muted);
+      margin-top: 0.65rem;
+    }
+    .answers-summary {
+      margin-top: 0.75rem;
+      font-size: 0.82rem;
+      color: var(--ok);
+    }
+
+    .btn-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 0.5rem;
+      margin-top: 1rem;
+    }
+    button {
+      padding: 0.6rem 1rem;
+      border: none;
+      border-radius: 8px;
+      font: inherit;
+      font-size: 0.9rem;
+      font-weight: 550;
+      cursor: pointer;
+      transition: 0.15s;
+    }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    .btn-primary { background: var(--purple); color: #fff; }
+    .btn-primary:hover:not(:disabled) { filter: brightness(1.08); }
+    .btn-secondary {
+      background: var(--surface2);
+      color: var(--text);
+      border: 1px solid var(--border);
+    }
+    .btn-secondary:hover:not(:disabled) { border-color: var(--muted); }
+    .btn-danger { background: #dc2626; color: #fff; }
+    .btn-danger:hover:not(:disabled) { background: #ef4444; }
+    .btn-ghost {
+      background: transparent;
+      color: var(--muted);
+      padding: 0.4rem 0.6rem;
+      font-size: 0.82rem;
+      font-weight: 500;
+    }
+    .btn-ghost:hover { color: var(--text); }
+
+    details {
+      margin-top: 0.5rem;
+      font-size: 0.85rem;
+    }
+    details summary {
+      cursor: pointer;
+      color: var(--muted);
+      user-select: none;
+      padding: 0.35rem 0;
+    }
+    details[open] summary { margin-bottom: 0.75rem; }
+    .checks { display: flex; flex-direction: column; gap: 0.5rem; }
+    .checks label {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      color: var(--text);
+      cursor: pointer;
+      margin: 0;
+    }
+    .checks input { width: auto; accent-color: var(--accent); }
+
+    #status {
+      position: sticky;
+      bottom: 1rem;
+      margin-top: 1rem;
+      padding: 0.75rem 1rem;
+      border-radius: 10px;
+      font-size: 0.88rem;
+      display: none;
+      backdrop-filter: blur(8px);
+    }
+    #status.show { display: block; }
+    #status.ok { background: rgba(21, 27, 36, 0.95); border: 1px solid rgba(52, 211, 153, 0.4); color: var(--ok); }
+    #status.err { background: rgba(21, 27, 36, 0.95); border: 1px solid rgba(248, 113, 113, 0.4); color: var(--err); }
+    #status.warn { background: rgba(21, 27, 36, 0.95); border: 1px solid rgba(251, 191, 36, 0.4); color: var(--warn); }
+
+    #log_panel {
+      margin-top: 1rem;
+      border-radius: var(--radius);
+      border: 1px solid var(--border);
+      overflow: hidden;
+      display: none;
+    }
+    #log_panel.open { display: block; }
+    #log_panel summary {
+      padding: 0.65rem 1rem;
+      background: var(--surface);
+      cursor: pointer;
+      font-size: 0.82rem;
+      color: var(--muted);
+      list-style: none;
+    }
+    #log_panel summary::-webkit-details-marker { display: none; }
+    #run_log {
+      margin: 0;
+      padding: 0.85rem 1rem;
+      background: var(--bg);
+      font-family: ui-monospace, monospace;
+      font-size: 0.72rem;
+      line-height: 1.45;
+      color: var(--muted);
+      max-height: 14rem;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .top-bar {
+      display: flex;
+      justify-content: flex-end;
+      margin-bottom: 0.5rem;
+    }
+    .spinner {
+      display: inline-block;
+      width: 0.9rem;
+      height: 0.9rem;
+      border: 2px solid rgba(255,255,255,0.25);
+      border-top-color: #fff;
+      border-radius: 50%;
+      animation: spin 0.7s linear infinite;
+      vertical-align: middle;
+      margin-right: 0.4rem;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div class="top-bar">
+      <button type="button" class="btn-ghost" id="btn_reload">↻ Recargar</button>
+    </div>
+
+    <header>
+      <h1>Asistente Moodle Quiz</h1>
+      <p>Conecta tu intento, genera respuestas con Gemini y envía al campus.</p>
+    </header>
+
+    <div class="steps" aria-hidden="true">
+      <div class="step-dot active" id="step1_ind">1 · Conectar</div>
+      <div class="step-dot" id="step2_ind">2 · Respuestas</div>
+      <div class="step-dot" id="step3_ind">3 · Enviar</div>
+    </div>
+
+    <!-- Paso 1 -->
+    <section class="card">
+      <div class="card-head">
+        <span class="card-num">1</span>
+        <div>
+          <h2 class="card-title">Conectar al intento</h2>
+          <p class="card-desc">Pega la URL del cuestionario abierto y la cookie del navegador.</p>
+        </div>
+      </div>
+
+      <label for="moodle_url">URL de attempt.php</label>
+      <input type="text" id="moodle_url" placeholder="https://campusvirtual.colombia.unir.net/mod/quiz/attempt.php?attempt=…&cmid=…" autocomplete="off">
+
+      <label for="cookie" style="margin-top: 0.85rem;">Cookie (DevTools → Network → attempt.php → Request Headers)</label>
+      <textarea id="cookie" spellcheck="false" placeholder="MoodleSessionCO=…; UNIR_SESSION=…"></textarea>
+
+      <div class="meta" id="connection_meta">
+        <span class="badge warn" id="badge_session">Sin sesión</span>
+      </div>
+      <input type="hidden" id="base_url">
+      <input type="hidden" id="attempt">
+      <input type="hidden" id="cmid">
+    </section>
+
+    <!-- Paso 2 -->
+    <section class="card">
+      <div class="card-head">
+        <span class="card-num">2</span>
+        <div>
+          <h2 class="card-title">Respuestas</h2>
+          <p class="card-desc">Gemini analiza el cuestionario y elige a/b/c/d por pregunta. Puedes corregir cualquier respuesta con un clic.</p>
+        </div>
+      </div>
+
+      <div class="answers-panel" id="answers_panel">
+        <div class="answers-empty" id="answers_empty">Aún no hay respuestas. Genera con Gemini cuando hayas pegado URL y cookie.</div>
+        <div class="answers-grid" id="answers_grid" hidden></div>
+        <p class="answers-hint" id="answers_hint" hidden>Clic en una respuesta para elegir a, b, c o d.</p>
+        <div class="answers-summary" id="answers_summary" hidden></div>
+      </div>
+
+      <div class="btn-row">
+        <button type="button" class="btn-primary" id="btn_run_gemini">✦ Generar con Gemini</button>
+      </div>
+      <details>
+        <summary>Otras fuentes de respuestas</summary>
+        <div class="btn-row">
+          <button type="button" class="btn-secondary" id="btn_import_retake">Cargar desde retake (2.º intento)</button>
+        </div>
+      </details>
+    </section>
+
+    <!-- Paso 3 -->
+    <section class="card">
+      <div class="card-head">
+        <span class="card-num">3</span>
+        <div>
+          <h2 class="card-title">Enviar al campus</h2>
+          <p class="card-desc">Simula primero si quieres; el envío real cuenta como entrega del intento.</p>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button type="button" class="btn-secondary" id="btn_run_dry">Simular envío</button>
+        <button type="button" class="btn-danger" id="btn_run_submit" disabled>Enviar al campus</button>
+      </div>
+
+      <details style="margin-top: 0.75rem;">
+        <summary>Opciones avanzadas</summary>
+        <div class="checks" style="margin-top: 0.5rem;">
+          <label><input type="checkbox" id="finish_attempt" checked> Terminar intento al enviar</label>
+          <label><input type="checkbox" id="finalize_after_summary" checked> Confirmar en página de resumen</label>
+        </div>
+      </details>
+    </section>
+
+    <details id="log_panel">
+      <summary>Ver salida técnica del comando</summary>
+      <pre id="run_log"></pre>
+    </details>
+
+    <div id="status" role="status"></div>
+  </div>
+
+  <script>
+    const LETTERS = ["a", "b", "c", "d"];
+    let answersState = {};
+    let openPickerQ = null;
+    let saveAnswersTimer = null;
+    const actionButtons = ["btn_run_gemini", "btn_run_dry", "btn_run_submit"];
+
+    const $ = (id) => document.getElementById(id);
+
+    function showStatus(msg, kind) {
+      const el = $("status");
+      el.textContent = msg;
+      el.className = "show " + (kind || "ok");
+    }
+
+    function setBusy(busy, label) {
+      actionButtons.forEach((id) => {
+        const btn = $(id);
+        btn.disabled = busy || (id === "btn_run_submit" && !hasAnswers());
+        if (busy && id === "btn_run_gemini") {
+          btn.dataset.prev = btn.innerHTML;
+          btn.innerHTML = '<span class="spinner"></span>' + (label || "Generando…");
+        } else if (!busy && btn.dataset.prev) {
+          btn.innerHTML = btn.dataset.prev;
+          delete btn.dataset.prev;
+        }
+      });
+    }
+
+    function hasAnswers() {
+      return Object.keys(answersState).length > 0;
+    }
+
+    function closeAnswerPicker() {
+      openPickerQ = null;
+      document.querySelectorAll(".answer-chip.open").forEach((el) => el.classList.remove("open"));
+      document.querySelectorAll(".answer-picker").forEach((el) => el.remove());
+    }
+
+    function openAnswerPicker(q, chipBtn) {
+      if (openPickerQ === q) {
+        closeAnswerPicker();
+        return;
+      }
+      closeAnswerPicker();
+      openPickerQ = q;
+      chipBtn.classList.add("open");
+
+      const picker = document.createElement("div");
+      picker.className = "answer-picker";
+      picker.setAttribute("role", "listbox");
+      picker.setAttribute("aria-label", `Opción pregunta ${q}`);
+
+      const current = answersState[q];
+      LETTERS.forEach((letter, idx) => {
+        const opt = document.createElement("button");
+        opt.type = "button";
+        opt.textContent = letter;
+        opt.setAttribute("role", "option");
+        if (idx === current) opt.classList.add("selected");
+        opt.addEventListener("click", (e) => {
+          e.stopPropagation();
+          setAnswer(q, idx);
+          closeAnswerPicker();
+        });
+        picker.appendChild(opt);
+      });
+
+      chipBtn.parentElement.appendChild(picker);
+    }
+
+    async function persistAnswers() {
+      await saveAnswersToServer({ ...answersState });
+    }
+
+    function schedulePersistAnswers() {
+      clearTimeout(saveAnswersTimer);
+      saveAnswersTimer = setTimeout(() => {
+        persistAnswers()
+          .then(() => showStatus("Cambio guardado en config.json", "ok"))
+          .catch((e) => showStatus(e.message, "err"));
+      }, 350);
+    }
+
+    function setAnswer(q, idx) {
+      if (idx < 0 || idx > 3) return;
+      answersState[q] = idx;
+      renderAnswers();
+      schedulePersistAnswers();
+    }
+
+    function renderAnswers() {
+      const grid = $("answers_grid");
+      const empty = $("answers_empty");
+      const summary = $("answers_summary");
+      const hint = $("answers_hint");
+      const count = Object.keys(answersState).length;
+
+      $("btn_run_submit").disabled = !count;
+
+      if (!count) {
+        grid.hidden = true;
+        summary.hidden = true;
+        hint.hidden = true;
+        empty.hidden = false;
+        closeAnswerPicker();
+        updateSteps();
+        return;
+      }
+
+      empty.hidden = true;
+      grid.hidden = false;
+      summary.hidden = false;
+      hint.hidden = false;
+      grid.innerHTML = "";
+
+      Object.keys(answersState)
+        .sort((a, b) => Number(a) - Number(b))
+        .forEach((q) => {
+          const idx = answersState[q];
+          const letter = LETTERS[idx] ?? "?";
+          const wrap = document.createElement("div");
+          wrap.className = "answer-chip-wrap";
+
+          const chip = document.createElement("button");
+          chip.type = "button";
+          chip.className = "answer-chip";
+          chip.setAttribute("aria-label", `Pregunta ${q}, respuesta ${letter}. Clic para cambiar.`);
+          chip.innerHTML = `<span class="q">P${q}</span><span class="letter">${letter}</span>`;
+          chip.addEventListener("click", (e) => {
+            e.stopPropagation();
+            openAnswerPicker(q, chip);
+          });
+
+          wrap.appendChild(chip);
+          grid.appendChild(wrap);
+        });
+
+      summary.textContent = `${count} respuesta${count === 1 ? "" : "s"} guardada${count === 1 ? "" : "s"} en config.json`;
+      updateSteps();
+    }
+
+    function setAnswers(obj) {
+      answersState = obj && typeof obj === "object" ? { ...obj } : {};
+      renderAnswers();
+    }
+
+    function updateConnectionMeta() {
+      const meta = $("connection_meta");
+      const attempt = $("attempt").value;
+      const cmid = $("cmid").value;
+      const hasCookie = $("cookie").value.trim().length > 0;
+      meta.innerHTML = "";
+
+      const sessionBadge = document.createElement("span");
+      sessionBadge.className = "badge " + (hasCookie ? "ok" : "warn");
+      sessionBadge.textContent = hasCookie ? "Cookie lista" : "Falta cookie";
+      meta.appendChild(sessionBadge);
+
+      if (attempt && cmid) {
+        const a = document.createElement("span");
+        a.className = "badge ok";
+        a.textContent = `attempt ${attempt}`;
+        meta.appendChild(a);
+        const c = document.createElement("span");
+        c.className = "badge ok";
+        c.textContent = `cmid ${cmid}`;
+        meta.appendChild(c);
+      } else {
+        const w = document.createElement("span");
+        w.className = "badge warn";
+        w.textContent = "Pega la URL del intento";
+        meta.appendChild(w);
+      }
+      updateSteps();
+    }
+
+    function updateSteps() {
+      const hasUrl = $("attempt").value && $("cmid").value;
+      const hasCookie = $("cookie").value.trim().length > 0;
+      const connected = hasUrl && hasCookie;
+
+      $("step1_ind").className = "step-dot " + (connected ? "done" : "active");
+      $("step2_ind").className = "step-dot " + (hasAnswers() ? "done" : connected ? "active" : "");
+      $("step3_ind").className = "step-dot " + (hasAnswers() ? "active" : "");
+    }
+
+    function parseMoodleUrl(silent) {
+      const raw = $("moodle_url").value.trim();
+      if (!raw) return false;
+      try {
+        const u = new URL(raw);
+        const attempt = u.searchParams.get("attempt");
+        const cmid = u.searchParams.get("cmid");
+        if (attempt) $("attempt").value = attempt;
+        if (cmid) $("cmid").value = cmid;
+        if (u.origin.startsWith("http")) $("base_url").value = u.origin;
+        updateConnectionMeta();
+        if (!silent && attempt && cmid) showStatus("Intento detectado correctamente", "ok");
+        return !!(attempt && cmid);
+      } catch {
+        if (!silent) showStatus("URL no válida", "err");
+        return false;
+      }
+    }
+
+    function collectForm() {
+      parseMoodleUrl(true);
+      return {
+        base_url: $("base_url").value.trim() || "https://campusvirtual.colombia.unir.net",
+        attempt: parseInt($("attempt").value, 10) || 0,
+        cmid: parseInt($("cmid").value, 10) || 0,
+        cookie: $("cookie").value.trim(),
+        answers: { ...answersState },
+        finish_attempt: $("finish_attempt").checked,
+        finalize_after_summary: $("finalize_after_summary").checked,
+        confirm_submit: false,
+      };
+    }
+
+    function validateBeforeRun() {
+      const cfg = collectForm();
+      if (!cfg.cookie) throw new Error("Pega la cookie del navegador (paso 1).");
+      if (!cfg.attempt || !cfg.cmid) throw new Error("Pega la URL de attempt.php (paso 1).");
+      return cfg;
+    }
+
+    function fillForm(data) {
+      $("base_url").value = data.base_url || "https://campusvirtual.colombia.unir.net";
+      $("attempt").value = data.attempt ?? "";
+      $("cmid").value = data.cmid ?? "";
+      $("cookie").value = data.cookie || "";
+      $("finish_attempt").checked = data.finish_attempt !== false;
+      $("finalize_after_summary").checked = data.finalize_after_summary !== false;
+      setAnswers(data.answers || {});
+      if (data.attempt && data.cmid) {
+        const base = data.base_url || "https://campusvirtual.colombia.unir.net";
+        $("moodle_url").value = `${base}/mod/quiz/attempt.php?attempt=${data.attempt}&cmid=${data.cmid}`;
+      }
+      updateConnectionMeta();
+    }
+
+    function showLog(text) {
+      $("run_log").textContent = text || "(sin salida)";
+      $("log_panel").classList.add("open");
+    }
+
+    function formatRunOutput(data) {
+      const parts = [];
+      if (data.command) parts.push("$ " + data.command);
+      if (data.stdout) parts.push(data.stdout);
+      if (data.stderr) parts.push("--- stderr ---\n" + data.stderr);
+      if (data.error) parts.push("--- error ---\n" + data.error);
+      parts.push("--- exit " + data.exit_code + " ---");
+      return parts.filter(Boolean).join("\n\n");
+    }
+
+    async function loadConfig() {
+      const res = await fetch("/api/config");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      fillForm(data);
+    }
+
+    async function saveAnswersToServer(answers) {
+      const cfg = collectForm();
+      cfg.answers = answers;
+      const res = await fetch("/api/config", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(cfg),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Error al guardar");
+    }
+
+    async function runAction(action, { confirmMsg, busyLabel } = {}) {
+      let config;
+      try {
+        config = validateBeforeRun();
+      } catch (e) {
+        showStatus(e.message, "err");
+        return;
+      }
+      if (action === "submit" && !hasAnswers()) {
+        showStatus("Genera respuestas antes de enviar (paso 2).", "err");
+        return;
+      }
+      if (confirmMsg && !window.confirm(confirmMsg)) return;
+
+      setBusy(true, busyLabel);
+      showStatus(
+        action === "gemini" ? "Consultando Gemini… puede tardar un minuto." :
+        action === "submit" ? "Enviando al campus…" : "Simulando envío…",
+        "warn"
+      );
+
+      try {
+        const res = await fetch("/api/run/" + action, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ config }),
+        });
+        const data = await res.json();
+        showLog(formatRunOutput(data));
+
+        if (data.answers) setAnswers(data.answers);
+
+        if (data.ok) {
+          showStatus(
+            action === "gemini" ? "Respuestas generadas y guardadas" :
+            action === "submit" ? "Enviado al campus correctamente" :
+            "Simulación OK — revisa la salida técnica si quieres",
+            "ok"
+          );
+        } else {
+          showStatus(data.error || "Algo falló — abre «Ver salida técnica»", "err");
+        }
+      } catch (e) {
+        showStatus(e.message, "err");
+      } finally {
+        setBusy(false);
+      }
+    }
+
+    async function importRetake() {
+      try {
+        validateBeforeRun();
+      } catch (e) {
+        showStatus(e.message, "err");
+        return;
+      }
+      const res = await fetch("/api/import/retake");
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || res.statusText);
+      setAnswers(data);
+      await saveAnswersToServer(data);
+      showStatus("Respuestas de retake cargadas", "ok");
+    }
+
+    $("moodle_url").addEventListener("input", () => parseMoodleUrl(true));
+    $("moodle_url").addEventListener("paste", () => setTimeout(() => parseMoodleUrl(false), 0));
+    $("cookie").addEventListener("input", updateConnectionMeta);
+
+    $("btn_reload").addEventListener("click", () =>
+      loadConfig().then(() => showStatus("Config recargado", "ok")).catch((e) => showStatus(e.message, "err"))
+    );
+    $("btn_run_gemini").addEventListener("click", () => runAction("gemini", { busyLabel: "Generando…" }));
+    $("btn_run_dry").addEventListener("click", () => runAction("dry-run"));
+    $("btn_run_submit").addEventListener("click", () =>
+      runAction("submit", {
+        confirmMsg: "¿Enviar las respuestas al campus UNIR?\n\nEsta acción es real y cuenta como entrega del intento.",
+      })
+    );
+    $("btn_import_retake").addEventListener("click", () =>
+      importRetake().catch((e) => showStatus(e.message, "err"))
+    );
+
+    document.addEventListener("click", () => closeAnswerPicker());
+
+    loadConfig().catch((e) => showStatus("No se pudo cargar config: " + e.message, "err"));
+  </script>
+</body>
+</html>
